@@ -9,6 +9,7 @@ import XCGLogger
 // To keep SwiftData happy.
 
 let TableBookmarks = "bookmarks"
+let TableBookmarksMirror = "bookmarksMirror"                           // Added in v9.
 
 let TableFavicons = "favicons"
 let TableHistory = "history"
@@ -34,6 +35,7 @@ private let AllTables: Args = [
     TableVisits,
 
     TableBookmarks,
+    TableBookmarksMirror,
 
     TableQueuedTabs,
 ]
@@ -58,7 +60,7 @@ private let log = Logger.syncLogger
  * We rely on SQLiteHistory having initialized the favicon table first.
  */
 public class BrowserTable: Table {
-    static let DefaultVersion = 8
+    static let DefaultVersion = 9
     let version: Int
     var name: String { return "BROWSER" }
     let sqliteVersion: Int32
@@ -169,6 +171,42 @@ public class BrowserTable: Table {
                ") "
     }
 
+    func getBookmarksMirrorTableCreationString(forVersion version: Int = BrowserTable.DefaultVersion) -> String? {
+        if version < 9 {
+            return nil
+        }
+
+        // The stupid absence of naming conventions here is thanks to pre-Sync Weave. Sorry.
+        // For now we have the simplest possible schema: everything in one.
+        let sql =
+        "CREATE TABLE IF NOT EXISTS \(TableBookmarksMirror) " +
+
+        // Shared fields.
+        "( id INTEGER PRIMARY KEY AUTOINCREMENT" +
+        ", guid TEXT NOT NULL UNIQUE" +
+        ", type TINYINT NOT NULL" +                    // Type enum. TODO: BookmarkNodeType needs to be extended.
+
+        // Record/envelope metadata that'll allow us to do merges.
+        ", server_modified INTEGER NOT NULL" +         // Milliseconds.
+        ", is_deleted TINYINT NOT NULL DEFAULT 0" +    // Boolean
+
+        ", hasDupe TINYINT NOT NULL DEFAULT 0" +       // Boolean, 0 (false) if deleted.
+        ", parentid TEXT" +                            // GUID
+        ", parentName TEXT" +
+
+        // Type-specific fields. These should be NOT NULL in many cases, but we're going
+        // for a sparse schema, so this'll do for now. Enforce these in the application code.
+        ", feedUri TEXT, siteUri TEXT" +               // LIVEMARKS
+        ", pos INT" +                                  // SEPARATORS
+        ", title TEXT, description TEXT" +             // FOLDERS, BOOKMARKS, QUERIES
+        ", bmkUri TEXT, tags TEXT, keyword TEXT" +     // BOOKMARKS, QUERIES
+        ", folderName TEXT, queryId TEXT" +            // QUERIES
+        ", CONSTRAINT parentidOrDeleted CHECK (parentid IS NOT NULL OR is_deleted = 1)" +
+        ", CONSTRAINT parentNameOrDeleted CHECK (parentName IS NOT NULL OR is_deleted = 1)" +
+        ")"
+
+        return sql
+    }
 
     func create(db: SQLiteDBConnection, version: Int) -> Bool {
         let favicons =
@@ -258,12 +296,15 @@ public class BrowserTable: Table {
         "title TEXT" +
         ") "
 
+        let bookmarksMirror = getBookmarksMirrorTableCreationString()
+
         let queries: [(String?, Args?)] = [
             (getDomainsTableCreationString(forVersion: version), nil),
             (getHistoryTableCreationString(forVersion: version), nil),
             (favicons, nil),
             (visits, nil),
             (bookmarks, nil),
+            (bookmarksMirror, nil),
             (faviconSites, nil),
             (indexShouldUpload, nil),
             (indexSiteIDDate, nil),
@@ -339,6 +380,12 @@ public class BrowserTable: Table {
         if from < 8 && to == 8 {
             // Nothing to do: we're just shifting the favicon table to be owned by this class.
             return true
+        }
+
+        if from < 9 && to >= 9 {
+            if !self.run(db, sql: getBookmarksMirrorTableCreationString(forVersion: to)!) {
+                return false
+            }
         }
 
         return true
