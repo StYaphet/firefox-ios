@@ -315,6 +315,10 @@ public class BookmarkBasePayload: CleartextPayloadJSON {
         return self.hasOptionalBooleanFields(BookmarkBasePayload.optionalBooleanFields)
     }
 
+    public var hasDupe: Bool {
+        return self["hasDupe"].asBool ?? false
+    }
+
     /**
      * This only makes sense for valid payloads.
      */
@@ -348,6 +352,6 @@ public class BookmarkBasePayload: CleartextPayloadJSON {
             return false
         }
 
-        return (self["hasDupe"].asBool ?? false) == (p["hasDupe"].asBool ?? false)
+        return self.hasDupe == p.hasDupe
     }
 }
