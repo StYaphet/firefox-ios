@@ -34,6 +34,9 @@ public class SQLiteBookmarks: BookmarksModelFactory {
     let db: BrowserDB
     let favicons: FaviconsTable<Favicon>
 
+    private static let defaultFolderTitle = NSLocalizedString("Untitled", tableName: "Storage", comment: "The default name for bookmark folders without titles.")
+    private static let defaultItemTitle = NSLocalizedString("Untitled", tableName: "Storage", comment: "The default name for bookmark nodes without titles.")
+
     public init(db: BrowserDB) {
         self.db = db
         self.favicons = FaviconsTable<Favicon>()
@@ -62,8 +65,7 @@ public class SQLiteBookmarks: BookmarksModelFactory {
     private class func folderFactory(row: SDRow) -> BookmarkFolder {
         let id = row["id"] as! Int
         let guid = row["guid"] as! String
-        let title = row["title"] as? String ??
-        NSLocalizedString("Untitled", tableName: "Storage", comment: "The default name for bookmark folders without titles.")
+        let title = row["title"] as? String ?? SQLiteBookmarks.defaultFolderTitle
         let folder = BookmarkFolder(guid: guid, title: title, editable: false)
         folder.id = id
         return folder
@@ -71,8 +73,7 @@ public class SQLiteBookmarks: BookmarksModelFactory {
 
     private class func nodeFactory(row: SDRow) -> BookmarkNode {
         let guid = row["guid"] as! String
-        let title = row["title"] as? String ??
-            NSLocalizedString("Untitled", tableName: "Storage", comment: "The default name for bookmark nodes without titles.")
+        let title = row["title"] as? String ?? SQLiteBookmarks.defaultItemTitle
         return BookmarkNode(guid: guid, title: title, editable: false)
     }
 
