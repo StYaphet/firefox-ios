@@ -290,3 +290,10 @@ extension SQLiteBookmarks: SearchableBookmarks {
         return db.runQuery(sql, args: args, factory: SQLiteBookmarks.itemFactory)
     }
 }
+
+extension SQLiteBookmarks: BookmarkMirrorStorage {
+    public func applyRecords(records: [BookmarkMirrorItem]) -> Success {
+        // TODO
+        return succeed()
+    }
+}

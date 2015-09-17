@@ -118,6 +118,11 @@ public struct BookmarkMirrorItem {
     }
 }
 
+public protocol BookmarkMirrorStorage {
+    func applyRecords(records: [BookmarkMirrorItem]) -> Success
+}
+
+
 public struct BookmarkRoots {
     // These match Places on desktop.
     public static let RootGUID =               "root________"
