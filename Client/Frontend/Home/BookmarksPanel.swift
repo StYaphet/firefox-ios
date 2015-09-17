@@ -28,7 +28,7 @@ class BookmarksPanel: SiteTableViewController, HomePanel {
             // to what we have on Android.
             profile.bookmarks.modelForFolder(BookmarkRoots.MobileFolderGUID).upon(onModelFetched)
 
-            // profile.bookmarks.modelForRoot(self.onNewModel, failure: self.onModelFailure)
+            //profile.bookmarks.modelForRoot().upon(onModelFetched)
         }
     }
 
