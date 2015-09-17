@@ -26,7 +26,7 @@ class SQLiteBookmarkFolder: BookmarkFolder {
 
     init(guid: String, title: String, children: Cursor<BookmarkNode>) {
         self.cursor = children
-        super.init(guid: guid, title: title)
+        super.init(guid: guid, title: title, editable: false)
     }
 }
 
@@ -44,7 +44,7 @@ public class SQLiteBookmarks: BookmarksModelFactory {
         let guid = row["guid"] as! String
         let url = row["url"] as! String
         let title = row["title"] as? String ?? url
-        let bookmark = BookmarkItem(guid: guid, title: title, url: url)
+        let bookmark = BookmarkItem(guid: guid, title: title, url: url, editable: false)
 
         // TODO: share this logic with SQLiteHistory.
         if let faviconUrl = row["iconURL"] as? String,
@@ -64,7 +64,7 @@ public class SQLiteBookmarks: BookmarksModelFactory {
         let guid = row["guid"] as! String
         let title = row["title"] as? String ??
         NSLocalizedString("Untitled", tableName: "Storage", comment: "The default name for bookmark folders without titles.")
-        let folder = BookmarkFolder(guid: guid, title: title)
+        let folder = BookmarkFolder(guid: guid, title: title, editable: false)
         folder.id = id
         return folder
     }
@@ -73,7 +73,7 @@ public class SQLiteBookmarks: BookmarksModelFactory {
         let guid = row["guid"] as! String
         let title = row["title"] as? String ??
             NSLocalizedString("Untitled", tableName: "Storage", comment: "The default name for bookmark nodes without titles.")
-        return BookmarkNode(guid: guid, title: title)
+        return BookmarkNode(guid: guid, title: title, editable: false)
     }
 
     private class func factory(row: SDRow) -> BookmarkNode {
