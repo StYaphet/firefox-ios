@@ -405,6 +405,10 @@ public class SQLiteBookmarkMirrorStorage: BookmarkMirrorStorage {
             "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 
             for args in values {
+                let guid = args[16]
+                let title = args[9]
+                let parent = args[5]
+                log.debug("Updating record with GUID \(guid), title \(title), parent \(parent).")
                 if let error = conn.executeChange(update, withArgs: args) {
                     log.error("Updating mirror: \(error.description).")
                     err = error
@@ -413,9 +417,11 @@ public class SQLiteBookmarkMirrorStorage: BookmarkMirrorStorage {
                 }
 
                 if conn.numberOfRowsModified > 0 {
+                    log.debug("Update succeeded. Not inserting.")
                     continue
                 }
 
+                log.debug("Inserting record with GUID \(guid), title \(title), parent \(parent).")
                 if let error = conn.executeChange(insert, withArgs: args) {
                     log.error("Inserting mirror: \(error.description).")
                     err = error
