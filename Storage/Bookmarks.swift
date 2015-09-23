@@ -274,7 +274,8 @@ public class BookmarksModel {
 
 public protocol BookmarksModelFactory {
     func modelForFolder(folder: BookmarkFolder) -> Deferred<Maybe<BookmarksModel>>
-    func modelForFolder(guid: String) -> Deferred<Maybe<BookmarksModel>>
+    func modelForFolder(guid: GUID) -> Deferred<Maybe<BookmarksModel>>
+    func modelForFolder(guid: GUID, title: String) -> Deferred<Maybe<BookmarksModel>>
 
     func modelForRoot() -> Deferred<Maybe<BookmarksModel>>
 
@@ -294,7 +295,7 @@ public protocol BookmarksModelFactory {
 public class MemoryBookmarkFolder: BookmarkFolder, SequenceType {
     let children: [BookmarkNode]
 
-    public init(guid: String, title: String, children: [BookmarkNode]) {
+    public init(guid: GUID, title: String, children: [BookmarkNode]) {
         self.children = children
         super.init(guid: guid, title: title, editable: false)
     }
@@ -437,10 +438,14 @@ public class MockMemoryBookmarksStore: BookmarksModelFactory, ShareToDestination
     }
 
     public func modelForFolder(folder: BookmarkFolder) -> Deferred<Maybe<BookmarksModel>> {
-        return self.modelForFolder(folder.guid)
+        return self.modelForFolder(folder.guid, title: folder.title)
     }
 
-    public  func modelForFolder(guid: String) -> Deferred<Maybe<BookmarksModel>> {
+    public func modelForFolder(guid: GUID) -> Deferred<Maybe<BookmarksModel>> {
+        return self.modelForFolder(guid, title: "")
+    }
+
+    public func modelForFolder(guid: GUID, title: String) -> Deferred<Maybe<BookmarksModel>> {
         var m: BookmarkFolder
         switch (guid) {
         case BookmarkRoots.MobileFolderGUID:

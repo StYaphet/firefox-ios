@@ -186,7 +186,7 @@ public class SQLiteBookmarks: BookmarksModelFactory {
         return self.getChildrenWhere(sql, args: args, includeIcon: true)
     }
 
-    private func modelForFolder(guid: String, title: String) -> Deferred<Maybe<BookmarksModel>> {
+    public func modelForFolder(guid: String, title: String) -> Deferred<Maybe<BookmarksModel>> {
         let children = getChildren(guid)
         if children.status == .Failure {
             return deferMaybe(DatabaseError(description: children.statusMessage))
