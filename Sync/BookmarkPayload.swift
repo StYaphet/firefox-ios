@@ -27,6 +27,11 @@ public enum BookmarkType: String {
     case query
     case microsummary     // Dead: now a bookmark.
 
+    // The result might be invalid, but it won't be nil.
+    public static func somePayloadFromJSON(json: JSON) -> BookmarkBasePayload {
+        return payloadFromJSON(json) ?? BookmarkBasePayload(json)
+    }
+
     public static func payloadFromJSON(json: JSON) -> BookmarkBasePayload? {
         guard let typeString = json["type"].asString else {
             return nil
