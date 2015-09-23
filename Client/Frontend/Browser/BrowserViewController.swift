@@ -2135,8 +2135,10 @@ extension BrowserViewController {
         ToolbarTextField.appearance().backgroundColor = UIConstants.PrivateModeLocationBackgroundColor
         ToolbarTextField.appearance().textColor = UIColor.whiteColor()
         ToolbarTextField.appearance().clearButtonTintColor = UIColor.whiteColor()
+        ToolbarTextField.appearance().highlightColor = UIConstants.PrivateModeTextHighlightColor
 
         URLBarView.appearance().locationBorderColor = UIConstants.PrivateModeLocationBorderColor
+        URLBarView.appearance().locationActiveBorderColor = UIConstants.PrivateModePurple
         URLBarView.appearance().progressBarTint = UIConstants.PrivateModePurple
         URLBarView.appearance().cancelTextColor = UIColor.whiteColor()
         URLBarView.appearance().actionButtonTintColor = UIConstants.PrivateModeActionButtonTintColor
@@ -2144,7 +2146,7 @@ extension BrowserViewController {
         BrowserToolbar.appearance().actionButtonTintColor = UIConstants.PrivateModeActionButtonTintColor
 
         TabsButton.appearance().borderColor = UIConstants.PrivateModePurple
-        TabsButton.appearance().borderWidth = 2
+        TabsButton.appearance().borderWidth = 1
         TabsButton.appearance().titleFont = UIConstants.DefaultMediumBoldFont
         TabsButton.appearance().titleBackgroundColor = UIConstants.AppBackgroundColor
         TabsButton.appearance().textColor = UIConstants.PrivateModePurple
@@ -2161,9 +2163,11 @@ extension BrowserViewController {
 
         ToolbarTextField.appearance().backgroundColor = UIColor.whiteColor()
         ToolbarTextField.appearance().textColor = UIColor.blackColor()
+        ToolbarTextField.appearance().highlightColor = AutocompleteTextFieldUX.HighlightColor
         ToolbarTextField.appearance().clearButtonTintColor = nil
 
         URLBarView.appearance().locationBorderColor = URLBarViewUX.TextFieldBorderColor
+        URLBarView.appearance().locationActiveBorderColor = URLBarViewUX.TextFieldActiveBorderColor
         URLBarView.appearance().progressBarTint = URLBarViewUX.ProgressTintColor
         URLBarView.appearance().cancelTextColor = UIColor.blackColor()
         URLBarView.appearance().actionButtonTintColor = UIColor.darkGrayColor()
