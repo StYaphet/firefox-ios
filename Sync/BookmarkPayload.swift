@@ -304,7 +304,7 @@ public class BookmarkQueryPayload: BookmarkPayload {
 }
 
 public class BookmarkBasePayload: CleartextPayloadJSON {
-    private static let requiredStringFields: [String] = ["parentid", "parentName", "type"]
+    private static let requiredStringFields: [String] = ["parentid", "type"]
     private static let optionalBooleanFields: [String] = ["hasDupe"]
 
     func hasRequiredStringFields(fields: [String]) -> Bool {
@@ -342,6 +342,11 @@ public class BookmarkBasePayload: CleartextPayloadJSON {
 
         if self["deleted"].asBool ?? false {
             return true
+        }
+
+        if !(self["parentName"].isString || self.id == "places") {
+            log.warning("Not the places root and missing parent name.")
+            return false
         }
 
         if !self.hasRequiredStringFields(BookmarkBasePayload.requiredStringFields) {
@@ -389,6 +394,10 @@ public class BookmarkBasePayload: CleartextPayloadJSON {
             return false
         }
 
+        if p["parentName"].asString != self["parentName"].asString {
+            return false
+        }
+
         return self.hasDupe == p.hasDupe
     }
 }
@@ -432,7 +441,7 @@ extension LivemarkPayload: MirrorItemable {
             hasDupe: self.hasDupe,
             // TODO: these might need to be weakened if real-world data is dirty.
             parentID: self["parentid"].asString!,
-            parentName: self["parentName"].asString!,
+            parentName: self["parentName"].asString,
             title: self["title"].asString!,
             description: self["description"].asString!,
             feedURI: self["feedURI"].asString!,

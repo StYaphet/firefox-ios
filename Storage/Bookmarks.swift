@@ -57,7 +57,8 @@ public struct BookmarkMirrorItem {
     let folderName: String?
     let queryID: String?
 
-    public static func folder(guid: GUID, modified: Timestamp, hasDupe: Bool, parentID: GUID, parentName: GUID, title: String, description: String) -> BookmarkMirrorItem {
+    // The places root is a folder but has no parentName.
+    public static func folder(guid: GUID, modified: Timestamp, hasDupe: Bool, parentID: GUID, parentName: String?, title: String, description: String?) -> BookmarkMirrorItem {
         return BookmarkMirrorItem(guid: guid, type: .Bookmark, serverModified: modified,
             isDeleted: false, hasDupe: hasDupe, parentID: parentID, parentName: parentName,
             feedURI: nil, siteURI: nil,
