@@ -107,8 +107,8 @@ public class BookmarksMirrorer {
     }
 
     private func applyRecordsFromBatcher() -> Success {
-        let records = self.downloader.retrieve()
-                          .flatMap { ($0 as? MirrorItemable)?.toMirrorItem($0.modified) }
+        let retrieved = self.downloader.retrieve()
+        let records = retrieved.flatMap { ($0.payload as? MirrorItemable)?.toMirrorItem($0.modified) }
         if records.isEmpty {
             log.debug("Got empty batch.")
             return succeed()
