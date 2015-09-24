@@ -209,6 +209,11 @@ public class BookmarkPayload: BookmarkBasePayload {
             return false
         }
 
+        if !self.hasStringArrayField("tags") {
+            log.warning("Bookmark \(self.id) missing tags array.")
+            return false
+        }
+
         if !self.hasOptionalStringFields(BookmarkPayload.optionalBookmarkStringFields) {
             return false
         }
@@ -233,12 +238,22 @@ public class BookmarkPayload: BookmarkBasePayload {
             return false
         }
 
+        // TODO: compare optional fields.
+
+        if Set(self.tags) != Set(p.tags) {
+            return false
+        }
+
         if self["loadInSidebar"].asBool != p["loadInSidebar"].asBool {
             return false
         }
 
         return true
     }
+
+    lazy var tags: [String] = {
+        return self["tags"].asArray?.flatMap { $0.asString } ?? []
+    }()
 
     // This goes here because extensions cannot override methods yet.
     // The rest are in extension blocks at the end of this file.
