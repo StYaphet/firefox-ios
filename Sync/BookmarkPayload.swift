@@ -133,10 +133,7 @@ public class SeparatorPayload: BookmarkBasePayload {
 
 public class FolderPayload: BookmarkBasePayload {
     private var childrenAreValid: Bool {
-        guard let children = self["children"].asArray else {
-            return false
-        }
-        return children.every({ $0.isString })
+        return self.hasStringArrayField("children")
     }
 
     override public func isValid() -> Bool {
@@ -306,6 +303,13 @@ public class BookmarkQueryPayload: BookmarkPayload {
 public class BookmarkBasePayload: CleartextPayloadJSON {
     private static let requiredStringFields: [String] = ["parentid", "type"]
     private static let optionalBooleanFields: [String] = ["hasDupe"]
+
+    func hasStringArrayField(name: String) -> Bool {
+        guard let arr = self[name].asArray else {
+            return false
+        }
+        return arr.every { $0.isString }
+    }
 
     func hasRequiredStringFields(fields: [String]) -> Bool {
         return fields.every { self[$0].isString }
