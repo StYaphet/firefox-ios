@@ -400,7 +400,7 @@ public class SQLiteBookmarkMirrorStorage: BookmarkMirrorStorage {
             let insert =
             "INSERT OR IGNORE INTO \(TableBookmarksMirror) " +
             "(type, server_modified, is_deleted, hasDupe, parentid, parentName, " +
-             "feedUri, siteUri, pos, title, description, bmkUri, tags, keyword, folderName, queryId) " +
+             "feedUri, siteUri, pos, title, description, bmkUri, tags, keyword, folderName, queryId, guid) " +
             "VALUES " +
             "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 
