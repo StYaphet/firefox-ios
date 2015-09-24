@@ -68,7 +68,7 @@ public struct BookmarkMirrorItem {
             folderName: nil, queryID: nil)
     }
 
-    public static func livemark(guid: GUID, modified: Timestamp, hasDupe: Bool, parentID: GUID, parentName: String, title: String, description: String, feedURI: String, siteURI: String) -> BookmarkMirrorItem {
+    public static func livemark(guid: GUID, modified: Timestamp, hasDupe: Bool, parentID: GUID, parentName: String, title: String, description: String?, feedURI: String, siteURI: String) -> BookmarkMirrorItem {
         return BookmarkMirrorItem(guid: guid, type: .Livemark, serverModified: modified,
             isDeleted: false, hasDupe: hasDupe, parentID: parentID, parentName: parentName,
             feedURI: feedURI, siteURI: siteURI,
@@ -88,7 +88,7 @@ public struct BookmarkMirrorItem {
             folderName: nil, queryID: nil)
     }
 
-    public static func bookmark(guid: GUID, modified: Timestamp, hasDupe: Bool, parentID: GUID, parentName: String, title: String, description: String, URI: String, tags: String, keyword: String?) -> BookmarkMirrorItem {
+    public static func bookmark(guid: GUID, modified: Timestamp, hasDupe: Bool, parentID: GUID, parentName: String, title: String, description: String?, URI: String, tags: String, keyword: String?) -> BookmarkMirrorItem {
         return BookmarkMirrorItem(guid: guid, type: .Bookmark, serverModified: modified,
             isDeleted: false, hasDupe: hasDupe, parentID: parentID, parentName: parentName,
             feedURI: nil, siteURI: nil,
@@ -98,7 +98,7 @@ public struct BookmarkMirrorItem {
             folderName: nil, queryID: nil)
     }
 
-    public static func query(guid: GUID, modified: Timestamp, hasDupe: Bool, parentID: GUID, parentName: String, title: String, description: String, URI: String, tags: String, keyword: String, folderName: String, queryID: String) -> BookmarkMirrorItem {
+    public static func query(guid: GUID, modified: Timestamp, hasDupe: Bool, parentID: GUID, parentName: String, title: String, description: String?, URI: String, tags: String, keyword: String?, folderName: String?, queryID: String?) -> BookmarkMirrorItem {
         return BookmarkMirrorItem(guid: guid, type: .Query, serverModified: modified,
             isDeleted: false, hasDupe: hasDupe, parentID: parentID, parentName: parentName,
             feedURI: nil, siteURI: nil,
