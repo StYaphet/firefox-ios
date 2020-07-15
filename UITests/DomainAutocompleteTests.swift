@@ -4,100 +4,113 @@
 
 import Foundation
 import Shared
+import EarlGrey
 
 class DomainAutocompleteTests: KIFTestCase {
+    override func setUp() {
+        super.setUp()
+        BrowserUtils.configEarlGrey()
+        BrowserUtils.dismissFirstRunUI()
+    }
+
     func testAutocomplete() {
-        BrowserUtils.addHistoryEntry("Mozilla", url: NSURL(string: "http://mozilla.org/")!)
-        BrowserUtils.addHistoryEntry("Yahoo", url: NSURL(string: "http://www.yahoo.com/")!)
-        BrowserUtils.addHistoryEntry("Foo bar baz", url: NSURL(string: "https://foo.bar.baz.org/dingbat")!)
+        BrowserUtils.addHistoryEntry("Foo bar baz", url: URL(string: "https://foo.bar.baz.org/dingbat")!)
 
-        tester().tapViewWithAccessibilityIdentifier("url")
-        let textField = tester().waitForViewWithAccessibilityLabel("Address and Search") as! UITextField
-
-        // Basic autocompletion cases.
-        tester().enterTextIntoCurrentFirstResponder("w")
-        BrowserUtils.ensureAutocompletionResult(tester(), textField: textField, prefix: "w", completion: "ww.yahoo.com/")
-        tester().enterTextIntoCurrentFirstResponder("ww.yahoo.com/")
-        BrowserUtils.ensureAutocompletionResult(tester(), textField: textField, prefix: "www.yahoo.com/", completion: "")
-        tester().clearTextFromFirstResponder()
-
-        // Test that deleting characters works correctly with autocomplete
-        tester().enterTextIntoCurrentFirstResponder("www.yah")
-        BrowserUtils.ensureAutocompletionResult(tester(), textField: textField, prefix: "www.yah", completion: "oo.com/")
-        tester().deleteCharacterFromFirstResponser()
-        BrowserUtils.ensureAutocompletionResult(tester(), textField: textField, prefix: "www.yah", completion: "")
-        tester().deleteCharacterFromFirstResponser()
-        BrowserUtils.ensureAutocompletionResult(tester(), textField: textField, prefix: "www.ya", completion: "")
-        tester().enterTextIntoCurrentFirstResponder("h")
-        BrowserUtils.ensureAutocompletionResult(tester(), textField: textField, prefix: "www.yah", completion: "oo.com/")
-
-        // Delete the entire string, verify the home panels are shown again.
-        tester().deleteCharacterFromFirstResponser()
-        tester().deleteCharacterFromFirstResponser()
-        tester().deleteCharacterFromFirstResponser()
-        tester().deleteCharacterFromFirstResponser()
-        tester().deleteCharacterFromFirstResponser()
-        tester().deleteCharacterFromFirstResponser()
-        tester().deleteCharacterFromFirstResponser()
-        tester().deleteCharacterFromFirstResponser()
-        tester().waitForViewWithAccessibilityLabel("Panel Chooser")
-
-        // Ensure that the scheme is included in the autocompletion.
-        tester().enterTextIntoCurrentFirstResponder("https")
-        BrowserUtils.ensureAutocompletionResult(tester(), textField: textField, prefix: "https", completion: "://foo.bar.baz.org/")
-        tester().clearTextFromFirstResponder()
+        tester().tapView(withAccessibilityIdentifier: "url")
+        let textField = tester().waitForView(withAccessibilityLabel: "Address and Search") as! UITextField
 
         // Multiple subdomains.
-        tester().enterTextIntoCurrentFirstResponder("f")
-        BrowserUtils.ensureAutocompletionResult(tester(), textField: textField, prefix: "f", completion: "oo.bar.baz.org/")
+        tester().enterText(intoCurrentFirstResponder: "f")
+        tester().waitForAnimationsToFinish()
+        BrowserUtils.ensureAutocompletionResult(tester(), textField: textField, prefix: "f", completion: "oo.bar.baz.org")
         tester().clearTextFromFirstResponder()
-        tester().enterTextIntoCurrentFirstResponder("b")
-        BrowserUtils.ensureAutocompletionResult(tester(), textField: textField, prefix: "b", completion: "ar.baz.org/")
-        tester().enterTextIntoCurrentFirstResponder("a")
-        BrowserUtils.ensureAutocompletionResult(tester(), textField: textField, prefix: "ba", completion: "r.baz.org/")
-        tester().enterTextIntoCurrentFirstResponder("z")
-        BrowserUtils.ensureAutocompletionResult(tester(), textField: textField, prefix: "baz", completion: ".org/")
+        tester().waitForAnimationsToFinish()
+        // Expected behavior but changed intentionally https://bugzilla.mozilla.org/show_bug.cgi?id=1536746
+        // tester().enterText(intoCurrentFirstResponder: "b")
+        // BrowserUtils.ensureAutocompletionResult(tester(), textField: textField, prefix: "b", completion: "ar.baz.org")
+        // tester().enterText(intoCurrentFirstResponder: "a")
+        // BrowserUtils.ensureAutocompletionResult(tester(), textField: textField, prefix: "ba", completion: "r.baz.org")
+        // tester().enterText(intoCurrentFirstResponder: "z")
 
-        // Non-matches.
-        tester().enterTextIntoCurrentFirstResponder("!")
-        BrowserUtils.ensureAutocompletionResult(tester(), textField: textField, prefix: "baz!", completion: "")
-        tester().clearTextFromFirstResponder()
+        // Current and temporary behaviour entering more than 2 chars for the matching
+        tester().enterText(intoCurrentFirstResponder: "bar")
+        tester().waitForAnimationsToFinish()
+        BrowserUtils.ensureAutocompletionResult(tester(), textField: textField, prefix: "bar", completion: ".baz.org")
+        tester().enterText(intoCurrentFirstResponder: ".ba")
+        tester().waitForAnimationsToFinish()
+        BrowserUtils.ensureAutocompletionResult(tester(), textField: textField, prefix: "bar.ba", completion: "z.org")
+        tester().enterText(intoCurrentFirstResponder: "z")
+        tester().waitForAnimationsToFinish()
+        BrowserUtils.ensureAutocompletionResult(tester(), textField: textField, prefix: "bar.baz", completion: ".org")
+    }
 
-        // Ensure we don't match against TLDs.
-        tester().enterTextIntoCurrentFirstResponder("o")
-        BrowserUtils.ensureAutocompletionResult(tester(), textField: textField, prefix: "o", completion: "")
-        tester().clearTextFromFirstResponder()
+    func testAutocompleteAfterDeleteWithBackSpace() {
+        tester().waitForAnimationsToFinish()
+        tester().tapView(withAccessibilityIdentifier: "url")
+        let textField = tester().waitForView(withAccessibilityLabel: "Address and Search") as! UITextField
+        tester().enterText(intoCurrentFirstResponder: "facebook")
+        tester().waitForAnimationsToFinish()
+        BrowserUtils.ensureAutocompletionResult(tester(), textField: textField, prefix: "facebook", completion: ".com")
 
-        // Ensure we don't match other characters.
-        tester().enterTextIntoCurrentFirstResponder(".")
-        BrowserUtils.ensureAutocompletionResult(tester(), textField: textField, prefix: ".", completion: "")
-        tester().clearTextFromFirstResponder()
-        tester().enterTextIntoCurrentFirstResponder(":")
-        BrowserUtils.ensureAutocompletionResult(tester(), textField: textField, prefix: ":", completion: "")
-        tester().clearTextFromFirstResponder()
-        tester().enterTextIntoCurrentFirstResponder("/")
-        BrowserUtils.ensureAutocompletionResult(tester(), textField: textField, prefix: "/", completion: "")
-        tester().clearTextFromFirstResponder()
+        // Remove the completion part .com
+        tester().enterText(intoCurrentFirstResponder: XCUIKeyboardKey.delete.rawValue)
+        tester().waitForAnimationsToFinish()
 
-        // Ensure we don't match letters that don't start a word.
-        tester().enterTextIntoCurrentFirstResponder("a")
-        BrowserUtils.ensureAutocompletionResult(tester(), textField: textField, prefix: "a", completion: "")
-        tester().clearTextFromFirstResponder()
+        // Tap on Go to perform a search
+        EarlGrey.selectElement(with: grey_accessibilityLabel("go")).perform(grey_tap())
+        tester().waitForAnimationsToFinish()
+        tester().wait(forTimeInterval: 1)
 
-        // Ensure we don't match words outside of the domain.
-        tester().enterTextIntoCurrentFirstResponder("ding")
-        BrowserUtils.ensureAutocompletionResult(tester(), textField: textField, prefix: "ding", completion: "")
-        tester().clearTextFromFirstResponder()
+        // Tap on the url to go back to the awesomebar results
+        tester().tapView(withAccessibilityIdentifier: "url")
+        tester().waitForAnimationsToFinish()
+        let textField2 = tester().waitForView(withAccessibilityLabel: "Address and Search") as! UITextField
+        // Facebook word appears highlighted and so it is shown as facebook\u{7F} when extracting the value to compare
+        BrowserUtils.ensureAutocompletionResult(tester(), textField: textField2 , prefix: "facebook\u{7F}", completion: "")
+    }
 
-        tester().tapViewWithAccessibilityLabel("Cancel")
+    // Bug https://bugzilla.mozilla.org/show_bug.cgi?id=1541832 scenario 1
+    func testAutocompleteOnechar() {
+        tester().waitForAnimationsToFinish()
+        tester().tapView(withAccessibilityIdentifier: "url")
+        let textField = tester().waitForView(withAccessibilityLabel: "Address and Search") as! UITextField
+        tester().enterText(intoCurrentFirstResponder: "f")
+        tester().waitForAnimationsToFinish()
+        BrowserUtils.ensureAutocompletionResult(tester(), textField: textField, prefix: "f", completion: "acebook.com")
+    }
+
+    // Bug https://bugzilla.mozilla.org/show_bug.cgi?id=1541832 scenario 2
+    func testAutocompleteOneCharAfterRemovingPreviousTerm() {
+        tester().tapView(withAccessibilityIdentifier: "url")
+        let textField = tester().waitForView(withAccessibilityLabel: "Address and Search") as! UITextField
+        tester().enterText(intoCurrentFirstResponder: "foo")
+
+        // Remove the completion part and the the foo chars one by one
+        for _ in 1...4 {
+            EarlGrey.selectElement(with: grey_accessibilityID("address"))
+                .inRoot(grey_kindOfClass(UITextField.self))
+                .perform(grey_typeText("\u{0008}"))
+        }
+        tester().waitForAnimationsToFinish()
+        tester().enterText(intoCurrentFirstResponder: "f")
+        tester().waitForAnimationsToFinish()
+        BrowserUtils.ensureAutocompletionResult(tester(), textField: textField, prefix: "f", completion: "acebook.com")
+    }
+
+    // Bug https://bugzilla.mozilla.org/show_bug.cgi?id=1541832 scenario 3
+    func testAutocompleteOneCharAfterRemovingWithClearButton() {
+        tester().tapView(withAccessibilityIdentifier: "url")
+        let textField = tester().waitForView(withAccessibilityLabel: "Address and Search") as! UITextField
+        tester().enterText(intoCurrentFirstResponder: "foo")
+        tester().tapView(withAccessibilityLabel: "Clear text")
+        tester().enterText(intoCurrentFirstResponder: "f")
+        BrowserUtils.ensureAutocompletionResult(tester(), textField: textField, prefix: "f", completion: "acebook.com")
     }
 
     override func tearDown() {
-        do {
-            try tester().tryFindingTappableViewWithAccessibilityLabel("Cancel")
-            tester().tapViewWithAccessibilityLabel("Cancel")
-        } catch _ {
-        }
-        BrowserUtils.clearHistoryItems(tester())
+        super.tearDown()
+        EarlGrey.selectElement(with: grey_accessibilityID("urlBar-cancel")).perform(grey_tap())
+        BrowserUtils.resetToAboutHome()
+        BrowserUtils.clearPrivateData()
     }
 }

@@ -5,27 +5,27 @@
 import Foundation
 import WebKit
 
-protocol SessionRestoreHelperDelegate: class {
-    func sessionRestoreHelper(helper: SessionRestoreHelper, didRestoreSessionForBrowser browser: Browser)
+protocol SessionRestoreHelperDelegate: AnyObject {
+    func sessionRestoreHelper(_ helper: SessionRestoreHelper, didRestoreSessionForTab tab: Tab)
 }
 
-class SessionRestoreHelper: BrowserHelper {
+class SessionRestoreHelper: TabContentScript {
     weak var delegate: SessionRestoreHelperDelegate?
-    private weak var browser: Browser?
+    fileprivate weak var tab: Tab?
 
-    required init(browser: Browser) {
-        self.browser = browser
+    required init(tab: Tab) {
+        self.tab = tab
     }
 
     func scriptMessageHandlerName() -> String? {
         return "sessionRestoreHelper"
     }
 
-    func userContentController(userContentController: WKUserContentController, didReceiveScriptMessage message: WKScriptMessage) {
-        if let browser = browser, params = message.body as? [String: AnyObject] {
+    func userContentController(_ userContentController: WKUserContentController, didReceiveScriptMessage message: WKScriptMessage) {
+        if let tab = tab, let params = message.body as? [String: AnyObject] {
             if params["name"] as! String == "didRestoreSession" {
-                dispatch_async(dispatch_get_main_queue()) {
-                    delegate?.sessionRestoreHelper(self, didRestoreSessionForBrowser: browser)
+                DispatchQueue.main.async {
+                    self.delegate?.sessionRestoreHelper(self, didRestoreSessionForTab: tab)
                 }
             }
         }

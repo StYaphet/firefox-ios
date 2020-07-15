@@ -2,34 +2,37 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-import Foundation
 import UIKit
 import SnapKit
+import Shared
+import XCGLogger
+
+private let log = Logger.browserLogger
 
 enum ReaderModeBarButtonType {
-    case MarkAsRead, MarkAsUnread, Settings, AddToReadingList, RemoveFromReadingList
+    case markAsRead, markAsUnread, settings, addToReadingList, removeFromReadingList
 
-    private var localizedDescription: String {
+    fileprivate var localizedDescription: String {
         switch self {
-        case .MarkAsRead: return NSLocalizedString("Mark as Read", comment: "Name for Mark as read button in reader mode")
-        case .MarkAsUnread: return NSLocalizedString("Mark as Unread", comment: "Name for Mark as unread button in reader mode")
-        case .Settings: return NSLocalizedString("Display Settings", comment: "Name for display settings button in reader mode. Display in the meaning of presentation, not monitor.")
-        case .AddToReadingList: return NSLocalizedString("Add to Reading List", comment: "Name for button adding current article to reading list in reader mode")
-        case .RemoveFromReadingList: return NSLocalizedString("Remove from Reading List", comment: "Name for button removing current article from reading list in reader mode")
+        case .markAsRead: return NSLocalizedString("Mark as Read", comment: "Name for Mark as read button in reader mode")
+        case .markAsUnread: return NSLocalizedString("Mark as Unread", comment: "Name for Mark as unread button in reader mode")
+        case .settings: return NSLocalizedString("Display Settings", comment: "Name for display settings button in reader mode. Display in the meaning of presentation, not monitor.")
+        case .addToReadingList: return NSLocalizedString("Add to Reading List", comment: "Name for button adding current article to reading list in reader mode")
+        case .removeFromReadingList: return NSLocalizedString("Remove from Reading List", comment: "Name for button removing current article from reading list in reader mode")
         }
     }
 
-    private var imageName: String {
+    fileprivate var imageName: String {
         switch self {
-        case .MarkAsRead: return "MarkAsRead"
-        case .MarkAsUnread: return "MarkAsUnread"
-        case .Settings: return "SettingsSerif"
-        case .AddToReadingList: return "addToReadingList"
-        case .RemoveFromReadingList: return "removeFromReadingList"
+        case .markAsRead: return "MarkAsRead"
+        case .markAsUnread: return "MarkAsUnread"
+        case .settings: return "SettingsSerif"
+        case .addToReadingList: return "addToReadingList"
+        case .removeFromReadingList: return "removeFromReadingList"
         }
     }
 
-    private var image: UIImage? {
+    fileprivate var image: UIImage? {
         let image = UIImage(named: imageName)
         image?.accessibilityLabel = localizedDescription
         return image
@@ -37,7 +40,7 @@ enum ReaderModeBarButtonType {
 }
 
 protocol ReaderModeBarViewDelegate {
-    func readerModeBar(readerModeBar: ReaderModeBarView, didSelectButton buttonType: ReaderModeBarButtonType)
+    func readerModeBar(_ readerModeBar: ReaderModeBarView, didSelectButton buttonType: ReaderModeBarButtonType)
 }
 
 class ReaderModeBarView: UIView {
@@ -47,27 +50,36 @@ class ReaderModeBarView: UIView {
     var settingsButton: UIButton!
     var listStatusButton: UIButton!
 
+    @objc dynamic var buttonTintColor = UIColor.clear {
+        didSet {
+            readStatusButton.tintColor = self.buttonTintColor
+            settingsButton.tintColor = self.buttonTintColor
+            listStatusButton.tintColor = self.buttonTintColor
+        }
+    }
+
     override init(frame: CGRect) {
         super.init(frame: frame)
 
-        backgroundColor = UIColor.whiteColor()
-
-        readStatusButton = createButton(type: .MarkAsRead, action: "SELtappedReadStatusButton:")
-        readStatusButton.snp_makeConstraints { (make) -> () in
-            make.left.equalTo(self)
+        readStatusButton = createButton(.markAsRead, action: #selector(tappedReadStatusButton))
+        readStatusButton.accessibilityIdentifier = "ReaderModeBarView.readStatusButton"
+        readStatusButton.snp.makeConstraints { (make) -> Void in
+            make.left.equalTo(self.safeArea.left)
             make.height.centerY.equalTo(self)
             make.width.equalTo(80)
         }
 
-        settingsButton = createButton(type: .Settings, action: "SELtappedSettingsButton:")
-        settingsButton.snp_makeConstraints { (make) -> () in
+        settingsButton = createButton(.settings, action: #selector(tappedSettingsButton))
+        settingsButton.accessibilityIdentifier = "ReaderModeBarView.settingsButton"
+        settingsButton.snp.makeConstraints { (make) -> Void in
             make.height.centerX.centerY.equalTo(self)
             make.width.equalTo(80)
         }
 
-        listStatusButton = createButton(type: .AddToReadingList, action: "SELtappedListStatusButton:")
-        listStatusButton.snp_makeConstraints { (make) -> () in
-            make.right.equalTo(self)
+        listStatusButton = createButton(.addToReadingList, action: #selector(tappedListStatusButton))
+        listStatusButton.accessibilityIdentifier = "ReaderModeBarView.listStatusButton"
+        listStatusButton.snp.makeConstraints { (make) -> Void in
+            make.right.equalTo(self.safeArea.right)
             make.height.centerY.equalTo(self)
             make.width.equalTo(80)
         }
@@ -77,64 +89,65 @@ class ReaderModeBarView: UIView {
         fatalError("init(coder:) has not been implemented")
     }
 
-    override func drawRect(rect: CGRect) {
-        super.drawRect(rect)
-        let context = UIGraphicsGetCurrentContext()
-        CGContextSetLineWidth(context, 0.5)
-        CGContextSetRGBStrokeColor(context, 0.1, 0.1, 0.1, 1.0)
-        CGContextSetStrokeColorWithColor(context, UIColor.grayColor().CGColor)
-        CGContextBeginPath(context)
-        CGContextMoveToPoint(context, 0, frame.height)
-        CGContextAddLineToPoint(context, frame.width, frame.height)
-        CGContextStrokePath(context)
+    override func draw(_ rect: CGRect) {
+        super.draw(rect)
+        guard let context = UIGraphicsGetCurrentContext() else { return }
+        context.setLineWidth(0.5)
+        context.setStrokeColor(red: 0.1, green: 0.1, blue: 0.1, alpha: 1.0)
+        context.setStrokeColor(UIColor.Photon.Grey50.cgColor)
+        context.beginPath()
+        context.move(to: CGPoint(x: 0, y: frame.height))
+        context.addLine(to: CGPoint(x: frame.width, y: frame.height))
+        context.strokePath()
     }
 
-    private func createButton(type type: ReaderModeBarButtonType, action: Selector) -> UIButton {
+    fileprivate func createButton(_ type: ReaderModeBarButtonType, action: Selector) -> UIButton {
         let button = UIButton()
         addSubview(button)
-        button.setImage(type.image, forState: .Normal)
-        button.addTarget(self, action: action, forControlEvents: .TouchUpInside)
+        button.setImage(type.image, for: [])
+        button.addTarget(self, action: action, for: .touchUpInside)
         return button
     }
 
-    func SELtappedReadStatusButton(sender: UIButton!) {
-        delegate?.readerModeBar(self, didSelectButton: unread ? .MarkAsRead : .MarkAsUnread)
+    func updateAlphaForSubviews(_ alpha: CGFloat) {
+        self.alpha = alpha
     }
 
-    func SELtappedSettingsButton(sender: UIButton!) {
-        delegate?.readerModeBar(self, didSelectButton: .Settings)
+    @objc func tappedReadStatusButton(_ sender: UIButton!) {
+        UnifiedTelemetry.recordEvent(category: .action, method: .tap, object: .readingListItem, value: unread ? .markAsRead : .markAsUnread, extras: [ "from": "reader-mode-toolbar" ])
+        delegate?.readerModeBar(self, didSelectButton: unread ? .markAsRead : .markAsUnread)
     }
 
-    func SELtappedListStatusButton(sender: UIButton!) {
-        delegate?.readerModeBar(self, didSelectButton: added ? .RemoveFromReadingList : .AddToReadingList)
+    @objc func tappedSettingsButton(_ sender: UIButton!) {
+        delegate?.readerModeBar(self, didSelectButton: .settings)
     }
 
-    private func updateUnread(unread: Bool) {
-        var buttonType: ReaderModeBarButtonType = unread ? .MarkAsRead : .MarkAsUnread
-        if !added {
-            buttonType = .MarkAsUnread
-        }
-        readStatusButton.setImage(buttonType.image, forState: UIControlState.Normal)
-
-        readStatusButton.enabled = added
-        readStatusButton.alpha = added ? 1.0 : 0.6
+    @objc func tappedListStatusButton(_ sender: UIButton!) {
+        UnifiedTelemetry.recordEvent(category: .action, method: added ? .delete : .add, object: .readingListItem, value: .readerModeToolbar)
+        delegate?.readerModeBar(self, didSelectButton: added ? .removeFromReadingList : .addToReadingList)
     }
 
     var unread: Bool = true {
         didSet {
-            updateUnread(unread)
+            let buttonType: ReaderModeBarButtonType = unread && added ? .markAsRead : .markAsUnread
+            readStatusButton.setImage(buttonType.image, for: [])
+            readStatusButton.isEnabled = added
+            readStatusButton.alpha = added ? 1.0 : 0.6
         }
-    }
-
-    private func updateAdded(added: Bool) {
-        let buttonType: ReaderModeBarButtonType = added ? .RemoveFromReadingList : .AddToReadingList
-        listStatusButton.setImage(buttonType.image, forState: UIControlState.Normal)
     }
 
     var added: Bool = false {
         didSet {
-            updateAdded(added)
-            updateUnread(unread)
+            let buttonType: ReaderModeBarButtonType = added ? .removeFromReadingList : .addToReadingList
+            listStatusButton.setImage(buttonType.image, for: [])
         }
+    }
+}
+
+extension ReaderModeBarView: Themeable {
+
+    func applyTheme() {
+        backgroundColor = UIColor.theme.browser.background
+        buttonTintColor = UIColor.theme.browser.tint
     }
 }

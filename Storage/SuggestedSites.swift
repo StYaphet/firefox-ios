@@ -2,33 +2,37 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-import XCGLogger
 import UIKit
 import Shared
 
-private let log = XCGLogger.defaultInstance()
-
-public class SuggestedSite: Site {
-    public let wordmark: Favicon
-    public let backgroundColor: UIColor
+open class SuggestedSite: Site {
+    override open var tileURL: URL {
+        return URL(string: url as String) ?? URL(string: "about:blank")!
+    }
 
     let trackingId: Int
     init(data: SuggestedSiteData) {
-        self.backgroundColor = UIColor(colorString: data.bgColor)
         self.trackingId = data.trackingId
-        self.wordmark = Favicon(url: data.imageUrl, date: NSDate(), type: .Icon)
-        super.init(url: data.url, title: data.title)
-        self.icon = Favicon(url: data.faviconUrl, date: NSDate(), type: .Icon)
+        super.init(url: data.url, title: data.title, bookmarked: nil)
+        self.guid = "default" + data.title // A guid is required in the case the site might become a pinned site
     }
 }
 
-public let SuggestedSites: SuggestedSitesCursor = SuggestedSitesCursor()
+public let SuggestedSites = SuggestedSitesCursor()
 
-public class SuggestedSitesCursor: ArrayCursor<SuggestedSite> {
-    private init() {
-        let sites = DefaultSuggestedSites.sites
-        let tiles = sites.map({data in SuggestedSite(data: data)})
-        super.init(data: tiles, status: .Success, statusMessage: "Loaded")
+open class SuggestedSitesCursor: ArrayCursor<SuggestedSite> {
+    fileprivate init() {
+        let locale = Locale.current
+        let sites = DefaultSuggestedSites.sites[locale.identifier] ??
+                    DefaultSuggestedSites.sites["default"]! as Array<SuggestedSiteData>
+        let tiles = sites.map({ data -> SuggestedSite in
+            var site = data
+            if let domainMap = DefaultSuggestedSites.urlMap[data.url], let localizedURL = domainMap[locale.identifier] {
+                site.url = localizedURL
+            }
+            return SuggestedSite(data: site)
+        })
+        super.init(data: tiles, status: .success, statusMessage: "Loaded")
     }
 }
 

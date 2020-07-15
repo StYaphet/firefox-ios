@@ -6,11 +6,7 @@
   <head>
     <title>%error_title%</title>
     <meta name="viewport" content="initial-scale=1, maximum-scale=1">
-    <link rel="stylesheet" href="NetError.css" type="text/css" media="all" />
-
-    <!-- If the location of the favicon is changed here, the FAVICON_ERRORPAGE_URL symbol in
-         toolkit/components/places/src/nsFaviconService.h should be updated. -->
-    <link rel="icon" type="image/png" id="favicon" href="chrome://global/skin/icons/warning-16.png"/>
+    <link rel="stylesheet" href="internal://local/errorpage-resource/NetError.css" type="text/css" media="all" />
 
     <script type="application/javascript">
       // If the user swipes back and forth to this tab, we want to make sure we make an attempt to reload the original page.
@@ -19,8 +15,9 @@
         if (fresh)
           fresh = false;
         else
-          location.reload();
+          webkit.messageHandlers.localRequestHelper.postMessage({ securitytoken: SECURITY_TOKEN, type: "reload" });
       });
+
     </script>
   </head>
 
@@ -42,14 +39,12 @@
           <p id="errorShortDescText">%short_description%</p>
         </div>
 
-        <!-- Long Description (Note: See netError.dtd for used XHTML tags) -->
-        <div id="errorLongDesc">%long_description%</div>
+        <!-- Buttons -->
         <div id="actions">%actions%</div>
       </div>
 
     </div>
   </div>
   <div id="decoration"></div>
-
   </body>
 </html>

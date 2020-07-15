@@ -3,8 +3,11 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 import Foundation
+import Account
 import Shared
 import XCGLogger
+import SwiftKeychainWrapper
+import SwiftyJSON
 
 private let log = Logger.syncLogger
 
@@ -20,9 +23,110 @@ public struct Fetched<T: Equatable>: Equatable {
     let timestamp: Timestamp
 }
 
-public func ==<T: Equatable>(lhs: Fetched<T>, rhs: Fetched<T>) -> Bool {
+public func ==<T>(lhs: Fetched<T>, rhs: Fetched<T>) -> Bool {
     return lhs.timestamp == rhs.timestamp &&
            lhs.value == rhs.value
+}
+
+public enum LocalCommand: CustomStringConvertible, Hashable {
+    // We've seen something (a blank server, a changed global sync ID, a
+    // crypto/keys with a different meta/global) that requires us to reset all
+    // local engine timestamps (save the ones listed) and possibly re-upload.
+    case resetAllEngines(except: Set<String>)
+
+    // We've seen something (a changed engine sync ID, a crypto/keys with a
+    // different per-engine bulk key) that requires us to reset our local engine
+    // timestamp and possibly re-upload.
+    case resetEngine(engine: String)
+
+    // We've seen a change in meta/global: an engine has come or gone.
+    case enableEngine(engine: String)
+    case disableEngine(engine: String)
+
+    public func toJSON() -> JSON {
+        switch self {
+        case let .resetAllEngines(except):
+            return JSON(["type": "ResetAllEngines", "except": Array(except).sorted()])
+
+        case let .resetEngine(engine):
+            return JSON(["type": "ResetEngine", "engine": engine])
+
+        case let .enableEngine(engine):
+            return JSON(["type": "EnableEngine", "engine": engine])
+
+        case let .disableEngine(engine):
+            return JSON(["type": "DisableEngine", "engine": engine])
+        }
+    }
+
+    public static func fromJSON(_ json: JSON) -> LocalCommand? {
+        if json.isError() {
+            return nil
+        }
+        guard let type = json["type"].string else {
+            return nil
+        }
+        switch type {
+        case "ResetAllEngines":
+            if let except = json["except"].array, except.every({$0.isString()}) {
+                return .resetAllEngines(except: Set(except.map({$0.stringValue})))
+            }
+            return nil
+        case "ResetEngine":
+            if let engine = json["engine"].string {
+                return .resetEngine(engine: engine)
+            }
+            return nil
+        case "EnableEngine":
+            if let engine = json["engine"].string {
+                return .enableEngine(engine: engine)
+            }
+            return nil
+        case "DisableEngine":
+            if let engine = json["engine"].string {
+                return .disableEngine(engine: engine)
+            }
+            return nil
+        default:
+            return nil
+        }
+    }
+
+    public var description: String {
+        return self.toJSON().description
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        switch self {
+        case let .resetAllEngines(except):
+            return hasher.combine("resetAllEngines\(except.sorted().joined())")
+        case let .resetEngine(engine):
+            return hasher.combine("resetEngine\(engine)")
+        case let .enableEngine(engine):
+            return hasher.combine("enableEngine\(engine)")
+        case let .disableEngine(engine):
+            return hasher.combine("disableEngine\(engine)")
+        }
+    }
+}
+
+public func ==(lhs: LocalCommand, rhs: LocalCommand) -> Bool {
+    switch (lhs, rhs) {
+    case (let .resetAllEngines(exceptL), let .resetAllEngines(exceptR)):
+        return exceptL == exceptR
+
+    case (let .resetEngine(engineL), let .resetEngine(engineR)):
+        return engineL == engineR
+
+    case (let .enableEngine(engineL), let .enableEngine(engineR)):
+        return engineL == engineR
+
+    case (let .disableEngine(engineL), let .disableEngine(engineR)):
+        return engineL == engineR
+
+    default:
+        return false
+    }
 }
 
 /*
@@ -39,12 +143,17 @@ private let PrefGlobalTS = "globalTS"
 private let PrefKeyLabel = "keyLabel"
 private let PrefKeysTS = "keysTS"
 private let PrefLastFetched = "lastFetched"
+private let PrefLocalCommands = "localCommands"
 private let PrefClientName = "clientName"
 private let PrefClientGUID = "clientGUID"
+private let PrefHashedUID = "hashedUID"
+private let PrefEngineConfiguration = "engineConfiguration"
+private let PrefEnginesEnablements = "enginesEnablements"
+private let PrefDeviceID = "deviceID"
 
 class PrefsBackoffStorage: BackoffStorage {
     let prefs: Prefs
-    private let key = "timestamp"
+    fileprivate let key = "timestamp"
 
     init(prefs: Prefs) {
         self.prefs = prefs
@@ -68,8 +177,8 @@ class PrefsBackoffStorage: BackoffStorage {
         self.prefs.removeObjectForKey(self.key)
     }
 
-    func isInBackoff(now: Timestamp) -> Timestamp? {
-        if let ts = self.serverBackoffUntilLocalTimestamp where now < ts {
+    func isInBackoff(_ now: Timestamp) -> Timestamp? {
+        if let ts = self.serverBackoffUntilLocalTimestamp, now < ts {
             return ts
         }
         return nil
@@ -83,6 +192,7 @@ class PrefsBackoffStorage: BackoffStorage {
  * 2. Metadata like timestamps, both for cached records and for server fetches.
  * 3. User preferences -- engine enablement.
  * 4. Client record state.
+ * 5. Local commands that have yet to be processed.
  *
  * Note that the scratchpad itself is immutable, but is a class passed by reference.
  * Its mutable fields can be mutated, but you can't accidentally e.g., switch out
@@ -91,16 +201,20 @@ class PrefsBackoffStorage: BackoffStorage {
  * TODO: the Scratchpad needs to be loaded from persistent storage, and written
  * back at certain points in the state machine (after a replayable action is taken).
  */
-public class Scratchpad {
-    public class Builder {
+open class Scratchpad {
+    open class Builder {
         var syncKeyBundle: KeyBundle         // For the love of god, if you change this, invalidate keys, too!
-        private var global: Fetched<MetaGlobal>?
-        private var keys: Fetched<Keys>?
-        private var keyLabel: String
-        var collectionLastFetched: [String: Timestamp]
+        fileprivate var global: Fetched<MetaGlobal>?
+        fileprivate var keys: Fetched<Keys>?
+        fileprivate var keyLabel: String
+        var localCommands: Set<LocalCommand>
         var engineConfiguration: EngineConfiguration?
+        // Engines that were manually enabled/disabled by the user since our last sync.
+        var enginesEnablements: [String: Bool]?
         var clientGUID: String
         var clientName: String
+        var fxaDeviceId: String
+        var hashedUID: String?
         var prefs: Prefs
 
         init(p: Scratchpad) {
@@ -111,54 +225,107 @@ public class Scratchpad {
 
             self.keys = p.keys
             self.keyLabel = p.keyLabel
-
-            self.collectionLastFetched = p.collectionLastFetched
+            self.localCommands = p.localCommands
             self.engineConfiguration = p.engineConfiguration
+            self.enginesEnablements = p.enginesEnablements
             self.clientGUID = p.clientGUID
             self.clientName = p.clientName
+            self.fxaDeviceId = p.fxaDeviceId
+            self.hashedUID = p.hashedUID
         }
 
-        public func setKeys(keys: Fetched<Keys>?) -> Builder {
-            self.keys = keys
-            if let keys = keys {
-                self.collectionLastFetched["crypto"] = keys.timestamp
+        open func clearLocalCommands() -> Builder {
+            self.localCommands.removeAll()
+            return self
+        }
+
+        open func addLocalCommandsFromKeys(_ keys: Fetched<Keys>?) -> Builder {
+            // Getting new keys can force local collection resets.
+            guard let freshKeys = keys?.value, let staleKeys = self.keys?.value, staleKeys.valid else {
+                // Removing keys, or new keys and either we didn't have old keys or they weren't valid.  Everybody gets a reset!
+                self.localCommands.insert(LocalCommand.resetAllEngines(except: []))
+                return self
+            }
+
+            // New keys, and we have valid old keys.
+            if freshKeys.defaultBundle != staleKeys.defaultBundle {
+                // Default bundle has changed.  Reset everything but collections that have unchanged bulk keys.
+                var except: Set<String> = Set()
+                // Symmetric difference, like an animal.  Swift doesn't allow Hashable tuples; don't fight it.
+                for (collection, keyBundle) in staleKeys.collectionKeys {
+                    if keyBundle == freshKeys.forCollection(collection) {
+                        except.insert(collection)
+                    }
+                }
+                for (collection, keyBundle) in freshKeys.collectionKeys {
+                    if keyBundle == staleKeys.forCollection(collection) {
+                        except.insert(collection)
+                    }
+                }
+                self.localCommands.insert(.resetAllEngines(except: except))
+            } else {
+                // Default bundle is the same.  Reset collections that have changed bulk keys.
+                for (collection, keyBundle) in staleKeys.collectionKeys {
+                    if keyBundle != freshKeys.forCollection(collection) {
+                        self.localCommands.insert(.resetEngine(engine: collection))
+                    }
+                }
+                for (collection, keyBundle) in freshKeys.collectionKeys {
+                    if keyBundle != staleKeys.forCollection(collection) {
+                        self.localCommands.insert(.resetEngine(engine: collection))
+                    }
+                }
             }
             return self
         }
 
-        public func setGlobal(global: Fetched<MetaGlobal>?) -> Builder {
+        open func setKeys(_ keys: Fetched<Keys>?) -> Builder {
+            self.keys = keys
+            return self
+        }
+
+        open func clearEnginesEnablements() -> Builder {
+            self.enginesEnablements = nil
+            return self
+        }
+
+        open func setGlobal(_ global: Fetched<MetaGlobal>?) -> Builder {
             self.global = global
             if let global = global {
-                self.collectionLastFetched["meta"] = global.timestamp
+                // We always take the incoming meta/global's engine configuration.
+                self.engineConfiguration = global.value.engineConfiguration()
             }
             return self
         }
 
-        public func clearFetchTimestamps() -> Builder {
-            self.collectionLastFetched = [:]
+        open func setEngineConfiguration(_ engineConfiguration: EngineConfiguration?) -> Builder {
+            self.engineConfiguration = engineConfiguration
             return self
         }
 
-        public func build() -> Scratchpad {
+        open func build() -> Scratchpad {
             return Scratchpad(
                     b: self.syncKeyBundle,
                     m: self.global,
                     k: self.keys,
                     keyLabel: self.keyLabel,
-                    fetches: self.collectionLastFetched,
+                    localCommands: self.localCommands,
                     engines: self.engineConfiguration,
+                    enginesEnablements: self.enginesEnablements,
                     clientGUID: self.clientGUID,
                     clientName: self.clientName,
+                    fxaDeviceId: self.fxaDeviceId,
+                    hashedUID: self.hashedUID,
                     persistingTo: self.prefs
             )
         }
     }
 
-    public lazy var backoffStorage: BackoffStorage = {
+    open lazy var backoffStorage: BackoffStorage = {
         return PrefsBackoffStorage(prefs: self.prefs.branch("backoff.storage"))
     }()
 
-    public func evolve() -> Scratchpad.Builder {
+    open func evolve() -> Scratchpad.Builder {
         return Scratchpad.Builder(p: self)
     }
 
@@ -192,15 +359,25 @@ public class Scratchpad {
     let keys: Fetched<Keys>?
     let keyLabel: String
 
-    // Collection timestamps.
-    var collectionLastFetched: [String: Timestamp]
+    // Local commands.
+    var localCommands: Set<LocalCommand>
 
     // Enablement states.
     let engineConfiguration: EngineConfiguration?
+    let enginesEnablements: [String: Bool]?
 
     // What's our client name?
     let clientName: String
     let clientGUID: String
+    let fxaDeviceId: String
+    let hashedUID: String?
+
+    var hashedDeviceID: String? {
+        guard let hashedUID = hashedUID else {
+            return nil
+        }
+        return (fxaDeviceId + hashedUID).sha256.hexEncodedString
+    }
 
     // Where do we persist when told?
     let prefs: Prefs
@@ -209,10 +386,13 @@ public class Scratchpad {
          m: Fetched<MetaGlobal>?,
          k: Fetched<Keys>?,
          keyLabel: String,
-         fetches: [String: Timestamp],
+         localCommands: Set<LocalCommand>,
          engines: EngineConfiguration?,
+         enginesEnablements: [String: Bool]?,
          clientGUID: String,
          clientName: String,
+         fxaDeviceId: String,
+         hashedUID: String?,
          persistingTo prefs: Prefs
         ) {
         self.syncKeyBundle = b
@@ -222,9 +402,12 @@ public class Scratchpad {
         self.keyLabel = keyLabel
         self.global = m
         self.engineConfiguration = engines
-        self.collectionLastFetched = fetches
+        self.enginesEnablements = enginesEnablements
+        self.localCommands = localCommands
         self.clientGUID = clientGUID
         self.clientName = clientName
+        self.fxaDeviceId = fxaDeviceId
+        self.hashedUID = hashedUID
     }
 
     // This should never be used in the end; we'll unpickle instead.
@@ -237,48 +420,32 @@ public class Scratchpad {
         self.keyLabel = Bytes.generateGUID()
         self.global = nil
         self.engineConfiguration = nil
-        self.collectionLastFetched = [String: Timestamp]()
+        self.enginesEnablements = nil
+        self.localCommands = Set()
         self.clientGUID = Bytes.generateGUID()
         self.clientName = DeviceInfo.defaultClientName()
+
+        self.fxaDeviceId = "unknown_fxaDeviceId"
+
+        self.hashedUID = nil
     }
 
-    // For convenience.
-    func withGlobal(m: Fetched<MetaGlobal>?) -> Scratchpad {
-        return self.evolve().setGlobal(m).build()
-    }
-
-    func freshStartWithGlobal(global: Fetched<MetaGlobal>) -> Scratchpad {
+    func freshStartWithGlobal(_ global: Fetched<MetaGlobal>) -> Scratchpad {
         // TODO: I *think* a new keyLabel is unnecessary.
         return self.evolve()
                    .setGlobal(global)
+                   .addLocalCommandsFromKeys(nil)
                    .setKeys(nil)
-                   .clearFetchTimestamps()
                    .build()
     }
 
-    func applyEngineChoices(old: MetaGlobal?) -> (Scratchpad, MetaGlobal?) {
-        log.info("Applying engine choices from inbound meta/global.")
-        log.info("Old meta/global syncID: \(old?.syncID)")
-        log.info("New meta/global syncID: \(self.global?.value.syncID)")
-        log.info("HACK: ignoring engine choices.")
-
-        // TODO: detect when the sets of declined or enabled engines have changed, and update
-        //       our preferences and generate a new meta/global if necessary.
-        return (self, nil)
-    }
-
-    private class func unpickleV1FromPrefs(prefs: Prefs, syncKeyBundle: KeyBundle) -> Scratchpad {
+    fileprivate class func unpickleV1FromPrefs(_ prefs: Prefs, syncKeyBundle: KeyBundle) -> Scratchpad {
         let b = Scratchpad(b: syncKeyBundle, persistingTo: prefs).evolve()
-
-        // Do this first so that the meta/global and crypto/keys unpickling can overwrite the timestamps.
-        if let lastFetched: [String: AnyObject] = prefs.dictionaryForKey(PrefLastFetched) {
-            b.collectionLastFetched = optFilter(mapValues(lastFetched, f: { ($0 as? NSNumber)?.unsignedLongLongValue }))
-        }
 
         if let mg = prefs.stringForKey(PrefGlobal) {
             if let mgTS = prefs.unsignedLongForKey(PrefGlobalTS) {
-                if let global = MetaGlobal.fromPayload(mg) {
-                    b.setGlobal(Fetched(value: global, timestamp: mgTS))
+                if let global = MetaGlobal.fromJSON(JSON(parseJSON: mg)) {
+                    _ = b.setGlobal(Fetched(value: global, timestamp: mgTS))
                 } else {
                     log.error("Malformed meta/global in prefs. Ignoring.")
                 }
@@ -291,12 +458,14 @@ public class Scratchpad {
         if let keyLabel = prefs.stringForKey(PrefKeyLabel) {
             b.keyLabel = keyLabel
             if let ckTS = prefs.unsignedLongForKey(PrefKeysTS) {
-                if let keys = KeychainWrapper.stringForKey("keys." + keyLabel) {
+                let key = "keys." + keyLabel
+                KeychainWrapper.sharedAppContainerKeychain.ensureStringItemAccessibility(.afterFirstUnlock, forKey: key)
+                if let keys = KeychainWrapper.sharedAppContainerKeychain.string(forKey: key) {
                     // We serialize as JSON.
                     let keys = Keys(payload: KeysPayload(keys))
                     if keys.valid {
                         log.debug("Read keys from Keychain with label \(keyLabel).")
-                        b.setKeys(Fetched(value: keys, timestamp: ckTS))
+                        _ = b.setKeys(Fetched(value: keys, timestamp: ckTS))
                     } else {
                         log.error("Invalid keys extracted from Keychain. Discarding.")
                     }
@@ -316,25 +485,60 @@ public class Scratchpad {
             return DeviceInfo.defaultClientName()
         }()
 
-        // TODO: engineConfiguration
+        b.hashedUID = prefs.stringForKey(PrefHashedUID)
+
+        b.fxaDeviceId = prefs.stringForKey(PrefDeviceID) ?? {
+            // Migrate from previous way of storing device id.
+            // This code will only be run once – the id will be stored
+            // in PrefDeviceID.
+            let PrefDeviceRegistration = "deviceRegistration"
+            if let string = prefs.stringForKey(PrefDeviceRegistration) {
+                let json = JSON(parseJSON: string)
+                if let id = json["id"].string {
+                    return id
+                }
+                prefs.removeObjectForKey(PrefDeviceRegistration)
+            }
+            // This is run the first time we sync with a new account.
+            // It will be replaced by a real fxaDeviceId, from account.deviceRegistration?.id.
+            log.warning("No value found in prefs for fxaDeviceId! Will overwrite on first sync")
+            return "unknown_fxaDeviceId"
+        }()
+
+        if let localCommands: [String] = prefs.stringArrayForKey(PrefLocalCommands) {
+            b.localCommands = Set(localCommands.compactMap({LocalCommand.fromJSON(JSON(parseJSON: $0))}))
+        }
+
+        if let engineConfigurationString = prefs.stringForKey(PrefEngineConfiguration) {
+            if let engineConfiguration = EngineConfiguration.fromJSON(JSON(parseJSON: engineConfigurationString)) {
+                b.engineConfiguration = engineConfiguration
+            } else {
+                log.error("Invalid engineConfiguration found in prefs. Discarding.")
+            }
+        }
+
+        if let enginesEnablements = prefs.dictionaryForKey(PrefEnginesEnablements) {
+            b.enginesEnablements = enginesEnablements as? [String: Bool]
+        }
+
         return b.build()
     }
 
     /**
      * Remove anything that might be left around after prefs is wiped.
      */
-    public class func clearFromPrefs(prefs: Prefs) {
+    open class func clearFromPrefs(_ prefs: Prefs) {
         if let keyLabel = prefs.stringForKey(PrefKeyLabel) {
             log.debug("Removing saved key from keychain.")
-            KeychainWrapper.removeObjectForKey(keyLabel)
+            KeychainWrapper.sharedAppContainerKeychain.removeObject(forKey: keyLabel)
         } else {
             log.debug("No key label; nothing to remove from keychain.")
         }
     }
 
-    public class func restoreFromPrefs(prefs: Prefs, syncKeyBundle: KeyBundle) -> Scratchpad? {
+    open class func restoreFromPrefs(_ prefs: Prefs, syncKeyBundle: KeyBundle) -> Scratchpad? {
         if let ver = prefs.intForKey(PrefVersion) {
-            switch (ver) {
+            switch ver {
             case 1:
                 return unpickleV1FromPrefs(prefs, syncKeyBundle: syncKeyBundle)
             default:
@@ -352,15 +556,15 @@ public class Scratchpad {
      * scratchpads will cause sadness — individual writes are thread-safe, but the
      * overall pseudo-transaction is not atomic.
      */
-    public func checkpoint() -> Scratchpad {
+    open func checkpoint() -> Scratchpad {
         return pickle(self.prefs)
     }
 
-    func pickle(prefs: Prefs) -> Scratchpad {
+    func pickle(_ prefs: Prefs) -> Scratchpad {
         prefs.setInt(1, forKey: PrefVersion)
         if let global = global {
             prefs.setLong(global.timestamp, forKey: PrefGlobalTS)
-            prefs.setString(global.value.toPayload().toString(), forKey: PrefGlobal)
+            prefs.setString(global.value.asPayload().json.stringify()!, forKey: PrefGlobal)
         } else {
             prefs.removeObjectForKey(PrefGlobal)
             prefs.removeObjectForKey(PrefGlobalTS)
@@ -368,28 +572,41 @@ public class Scratchpad {
 
         // We store the meat of your keys in the Keychain, using a random identifier that we persist in prefs.
         prefs.setString(self.keyLabel, forKey: PrefKeyLabel)
-        if let keys = self.keys {
-            let payload = keys.value.asPayload().toString(false)
+        if let keys = self.keys,
+            let payload = keys.value.asPayload().json.stringify() {
             let label = "keys." + self.keyLabel
             log.debug("Storing keys in Keychain with label \(label).")
             prefs.setString(self.keyLabel, forKey: PrefKeyLabel)
             prefs.setLong(keys.timestamp, forKey: PrefKeysTS)
-
-            // TODO: I could have sworn that we could specify kSecAttrAccessibleAfterFirstUnlock here.
-            KeychainWrapper.setString(payload, forKey: label)
+            KeychainWrapper.sharedAppContainerKeychain.set(payload, forKey: label, withAccessibility: .afterFirstUnlock)
         } else {
             log.debug("Removing keys from Keychain.")
-            KeychainWrapper.removeObjectForKey(self.keyLabel)
+            KeychainWrapper.sharedAppContainerKeychain.removeObject(forKey: self.keyLabel)
         }
-
-        // TODO: engineConfiguration
 
         prefs.setString(clientName, forKey: PrefClientName)
         prefs.setString(clientGUID, forKey: PrefClientGUID)
 
-        // Thanks, Swift.
-        let dict = mapValues(collectionLastFetched, f: { NSNumber(unsignedLongLong: $0) }) as NSDictionary
-        prefs.setObject(dict, forKey: PrefLastFetched)
+        if let uid = hashedUID {
+            prefs.setString(uid, forKey: PrefHashedUID)
+        }
+
+        prefs.setString(fxaDeviceId, forKey: PrefDeviceID)
+
+        let localCommands: [String] = Array(self.localCommands).map({$0.toJSON().stringify()!})
+        prefs.setObject(localCommands, forKey: PrefLocalCommands)
+
+        if let engineConfiguration = self.engineConfiguration {
+            prefs.setString(engineConfiguration.toJSON().stringify()!, forKey: PrefEngineConfiguration)
+        } else {
+            prefs.removeObjectForKey(PrefEngineConfiguration)
+        }
+
+        if let enginesEnablements = self.enginesEnablements {
+            prefs.setObject(enginesEnablements, forKey: PrefEnginesEnablements)
+        } else {
+            prefs.removeObjectForKey(PrefEnginesEnablements)
+        }
 
         return self
     }

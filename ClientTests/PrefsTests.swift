@@ -2,15 +2,23 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+@testable import Client
 import Foundation
-import XCTest
 import Shared
 
+import XCTest
+
 class PrefsTests: XCTestCase {
-    let prefs = NSUserDefaultsPrefs(prefix: "PrefsTests")
+    var prefs: NSUserDefaultsPrefs!
 
     override func setUp() {
+        super.setUp()
+        prefs = NSUserDefaultsPrefs(prefix: "PrefsTests")
+    }
+
+    override func tearDown() {
         prefs.clearAll()
+        super.tearDown()
     }
 
     func testClearPrefs() {
@@ -65,16 +73,16 @@ class PrefsTests: XCTestCase {
 
     func testMockProfilePrefsRoundtripsTimestamps() {
         let prefs = MockProfilePrefs().branch("baz")
-        let val: Timestamp = NSDate.now()
+        let val: Timestamp = Date.now()
         prefs.setLong(val, forKey: "foobar")
         XCTAssertEqual(val, prefs.unsignedLongForKey("foobar")!)
     }
 
     func testMockProfilePrefsKeys() {
         let prefs = MockProfilePrefs().branch("baz") as! MockProfilePrefs
-        let val: Timestamp = NSDate.now()
+        let val: Timestamp = Date.now()
         prefs.setLong(val, forKey: "foobar")
-        XCTAssertEqual(val, (prefs.things["baz.foobar"] as! NSNumber).unsignedLongLongValue)
+        XCTAssertEqual(val, (prefs.things["baz.foobar"] as! NSNumber).uint64Value)
     }
 
     func testMockProfilePrefsClearAll() {
@@ -87,6 +95,6 @@ class PrefsTests: XCTestCase {
         XCTAssertEqual(123, prefs1.intForKey("foo")!)
 
         prefs1.clearAll()
-        XCTAssertNil(prefs1.intForKey("foo") as! AnyObject?)
+        XCTAssertNil(prefs1.intForKey("foo") as AnyObject?)
     }
 }

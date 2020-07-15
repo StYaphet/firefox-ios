@@ -11,84 +11,104 @@ private let ReadabilityTaskDefaultTimeout = 15
 private let ReadabilityServiceDefaultConcurrency = 1
 
 enum ReadabilityOperationResult {
-    case Success(ReadabilityResult)
-    case Error(NSError)
-    case Timeout
+    case success(ReadabilityResult)
+    case error(NSError)
+    case timeout
 }
 
-class ReadabilityOperation: NSOperation, WKNavigationDelegate, ReadabilityBrowserHelperDelegate {
-    var url: NSURL
-    var semaphore: dispatch_semaphore_t
+class ReadabilityOperation: Operation {
+    var url: URL
+    var semaphore: DispatchSemaphore
     var result: ReadabilityOperationResult?
-    var browser: Browser!
+    var tab: Tab!
+    var readerModeCache: ReaderModeCache
 
-    init(url: NSURL) {
+    init(url: URL, readerModeCache: ReaderModeCache) {
         self.url = url
-        self.semaphore = dispatch_semaphore_create(0)
+        self.semaphore = DispatchSemaphore(value: 0)
+        self.readerModeCache = readerModeCache
     }
 
     override func main() {
-        if self.cancelled {
+        if self.isCancelled {
             return
         }
 
-        // Setup a browser, attach a Readability helper. Kick all this off on the main thread since UIKit
+        // Setup a tab, attach a Readability helper. Kick all this off on the main thread since UIKit
         // and WebKit are not safe from other threads.
 
-        dispatch_async(dispatch_get_main_queue(), { () -> Void in
+        DispatchQueue.main.async(execute: { () -> Void in
             let configuration = WKWebViewConfiguration()
-            self.browser = Browser(configuration: configuration)
-            self.browser.createWebview()
-            self.browser.navigationDelegate = self
+            self.tab = Tab(bvc: BrowserViewController.foregroundBVC(), configuration: configuration)
+            self.tab.createWebview()
+            self.tab.navigationDelegate = self
 
-            if let readabilityBrowserHelper = ReadabilityBrowserHelper(browser: self.browser) {
-                readabilityBrowserHelper.delegate = self
-                self.browser.addHelper(readabilityBrowserHelper, name: ReadabilityBrowserHelper.name())
-            }
+            let readerMode = ReaderMode(tab: self.tab)
+            readerMode.delegate = self
+            self.tab.addContentScript(readerMode, name: ReaderMode.name())
 
-            // Load the page in the webview. This either fails with a navigation error, or we get a readability
-            // callback. Or it takes too long, in which case the semaphore times out.
-            self.browser.loadRequest(NSURLRequest(URL: self.url))
+            // Load the page in the webview. This either fails with a navigation error, or we
+            // get a readability callback. Or it takes too long, in which case the semaphore
+            // times out. The script on the page will retry every 500ms for 10 seconds.
+            self.tab.loadRequest(URLRequest(url: self.url))
         })
-
-        if dispatch_semaphore_wait(semaphore, dispatch_time(DISPATCH_TIME_NOW, Int64(Double(ReadabilityTaskDefaultTimeout) * Double(NSEC_PER_SEC)))) != 0 {
-            result = ReadabilityOperationResult.Timeout
+        let timeout = DispatchTime.now() + .seconds(10)
+        if semaphore.wait(timeout: timeout) == .timedOut {
+            result = ReadabilityOperationResult.timeout
         }
 
         // Maybe this is where we should store stuff in the cache / run a callback?
 
         if let result = self.result {
             switch result {
-            case .Timeout:
+            case .timeout:
                 // Don't do anything on timeout
                 break
-            case .Success(let readabilityResult):
+            case .success(let readabilityResult):
                 do {
-                    try ReaderModeCache.sharedInstance.put(url, readabilityResult)
+                    try readerModeCache.put(url, readabilityResult)
                 } catch let error as NSError {
                     print("Failed to store readability results in the cache: \(error.localizedDescription)")
                     // TODO Fail
                 }
-            case .Error(_):
+            case .error(_):
                 // TODO Not entitely sure what to do on error. Needs UX discussion and followup bug.
                 break
             }
         }
     }
+}
 
-    func webView(webView: WKWebView, didFailNavigation navigation: WKNavigation!, withError error: NSError) {
-        result = ReadabilityOperationResult.Error(error)
-        dispatch_semaphore_signal(semaphore)
+extension ReadabilityOperation: WKNavigationDelegate {
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        result = ReadabilityOperationResult.error(error as NSError)
+        semaphore.signal()
     }
 
-    func webView(webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: NSError) {
-        result = ReadabilityOperationResult.Error(error)
-        dispatch_semaphore_signal(semaphore)
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        result = ReadabilityOperationResult.error(error as NSError)
+        semaphore.signal()
     }
 
-    func readabilityBrowserHelper(readabilityBrowserHelper: ReadabilityBrowserHelper, didFinishWithReadabilityResult readabilityResult: ReadabilityResult) {
-        result = ReadabilityOperationResult.Success(readabilityResult)
-        dispatch_semaphore_signal(semaphore)
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        webView.evaluateJavaScript("\(ReaderModeNamespace).checkReadability()")
+    }
+}
+
+extension ReadabilityOperation: ReaderModeDelegate {
+    func readerMode(_ readerMode: ReaderMode, didChangeReaderModeState state: ReaderModeState, forTab tab: Tab) {
+    }
+
+    func readerMode(_ readerMode: ReaderMode, didDisplayReaderizedContentForTab tab: Tab) {
+    }
+
+    func readerMode(_ readerMode: ReaderMode, didParseReadabilityResult readabilityResult: ReadabilityResult, forTab tab: Tab) {
+        guard tab == self.tab else {
+            return
+        }
+
+        result = ReadabilityOperationResult.success(readabilityResult)
+        semaphore.signal()
     }
 }
 
@@ -97,14 +117,14 @@ class ReadabilityService {
         return ReadabilityServiceSharedInstance
     }
 
-    var queue: NSOperationQueue
+    var queue: OperationQueue
 
     init() {
-        queue = NSOperationQueue()
+        queue = OperationQueue()
         queue.maxConcurrentOperationCount = ReadabilityServiceDefaultConcurrency
     }
 
-    func process(url: NSURL) {
-        queue.addOperation(ReadabilityOperation(url: url))
+    func process(_ url: URL, cache: ReaderModeCache) {
+        queue.addOperation(ReadabilityOperation(url: url, readerModeCache: cache))
     }
 }

@@ -10,7 +10,6 @@
 
 
 #import "CHNumber.h"
-#import "CHUtils.h"
 #import "CHNumber_Private.h"
 
 #define CH_ASCII_ZERO 48
@@ -188,11 +187,17 @@
 #pragma mark Getters and Setters
 
 - (NSString *)stringValue {
-	return [NSString stringWithCString:BN_bn2dec([self bigNumber]) encoding:NSASCIIStringEncoding];
+    char *cStr = BN_bn2dec([self bigNumber]);
+    NSString *str = [NSString stringWithCString:cStr encoding:NSASCIIStringEncoding];
+    OPENSSL_free(cStr);
+    return str;
 }
 
 - (NSString *)hexStringValue {
-	return [[NSString stringWithCString:BN_bn2hex([self bigNumber]) encoding:NSASCIIStringEncoding] lowercaseString];
+    char *cStr = BN_bn2hex([self bigNumber]);
+	NSString *str = [[NSString stringWithCString:cStr encoding:NSASCIIStringEncoding] lowercaseString];
+    OPENSSL_free(cStr);
+    return str;
 }
 
 - (NSData *)dataValue
@@ -274,7 +279,7 @@
 }
 
 - (BOOL)isPrime {
-	return BN_is_prime([self bigNumber], BN_prime_checks, NULL, context, NULL);
+	return BN_is_prime_ex([self bigNumber], BN_prime_checks, context, NULL);
 }
 
 - (BOOL)isOdd {
@@ -323,20 +328,6 @@
 
 - (BOOL) isEqual:(id)object {
 	return [self isEqualTo:object];
-}
-
-- (NSArray *)factors {
-	NSMutableArray * factors = [NSMutableArray array];
-	NSArray * primes = [CHUtils primesUpTo:self];
-	CHNumber * copy = [self copy];
-	for (CHNumber * prime in primes) {
-		while([[copy numberByModding:prime] isZero]) {
-			[factors addObject:prime];
-			copy = [copy numberByDividingBy:prime];
-		}
-		if ([copy isOne]) { break; }
-	}
-	return factors;
 }
 
 #pragma mark -

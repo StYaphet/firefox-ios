@@ -6,13 +6,14 @@ import Foundation
 import Shared
 import Storage
 import XCGLogger
+import SwiftyJSON
 
 private let log = Logger.syncLogger
-private let TabsStorageVersion = 1
+let TabsStorageVersion = 1
 
-public class TabsSynchronizer: BaseSingleCollectionSynchronizer, Synchronizer {
-    public required init(scratchpad: Scratchpad, delegate: SyncDelegate, basePrefs: Prefs) {
-        super.init(scratchpad: scratchpad, delegate: delegate, basePrefs: basePrefs, collection: "tabs")
+open class TabsSynchronizer: TimestampedSingleCollectionSynchronizer, Synchronizer {
+    public required init(scratchpad: Scratchpad, delegate: SyncDelegate, basePrefs: Prefs, why: SyncReason) {
+        super.init(scratchpad: scratchpad, delegate: delegate, basePrefs: basePrefs, why: why, collection: "tabs")
     }
 
     override var storageVersion: Int {
@@ -29,25 +30,26 @@ public class TabsSynchronizer: BaseSingleCollectionSynchronizer, Synchronizer {
         }
     }
 
-    private func createOwnTabsRecord(tabs: [RemoteTab]) -> Record<TabsPayload> {
+    fileprivate func createOwnTabsRecord(_ tabs: [RemoteTab]) -> Record<TabsPayload> {
         let guid = self.scratchpad.clientGUID
 
-        let jsonTabs: [JSON] = optFilter(tabs.map { $0.toJSON() })
         let tabsJSON = JSON([
             "id": guid,
             "clientName": self.scratchpad.clientName,
-            "tabs": jsonTabs
+            "tabs": tabs.compactMap { $0.toDictionary() }
         ])
-        log.debug("Sending tabs JSON \(tabsJSON.toString(true))")
+        if Logger.logPII {
+            log.verbose("Sending tabs JSON \(tabsJSON.stringify() ?? "nil")")
+        }
         let payload = TabsPayload(tabsJSON)
         return Record(id: guid, payload: payload, ttl: ThreeWeeksInSeconds)
     }
 
-    private func uploadOurTabs(localTabs: RemoteClientsAndTabs, toServer tabsClient: Sync15CollectionClient<TabsPayload>) -> Success{
+    fileprivate func uploadOurTabs(_ localTabs: RemoteClientsAndTabs, toServer tabsClient: Sync15CollectionClient<TabsPayload>) -> Success {
         // check to see if our tabs have changed or we're in a fresh start
         let lastUploadTime: Timestamp? = (self.tabsRecordLastUpload == 0) ? nil : self.tabsRecordLastUpload
-        let expired = lastUploadTime < (NSDate.now() - (OneMinuteInMilliseconds))
-        if !expired {
+        if let lastUploadTime = lastUploadTime,
+            lastUploadTime >= (Date.now() - (OneMinuteInMilliseconds)) {
             log.debug("Not uploading tabs: already did so at \(lastUploadTime).")
             return succeed()
         }
@@ -64,6 +66,9 @@ public class TabsSynchronizer: BaseSingleCollectionSynchronizer, Synchronizer {
             let tabsRecord = self.createOwnTabsRecord(tabs)
             log.debug("Uploading our tabs: \(tabs.count).")
 
+            var uploadStats = SyncUploadStats()
+            uploadStats.sent += 1
+
             // We explicitly don't send If-Unmodified-Since, because we always
             // want our upload to succeed -- we own the record.
             return tabsClient.put(tabsRecord, ifUnmodifiedSince: nil) >>== { resp in
@@ -71,27 +76,35 @@ public class TabsSynchronizer: BaseSingleCollectionSynchronizer, Synchronizer {
                     // Protocol says this should always be present for success responses.
                     log.debug("Tabs record upload succeeded. New timestamp: \(ts).")
                     self.tabsRecordLastUpload = ts
+                } else {
+                    uploadStats.sentFailed += 1
                 }
                 return succeed()
-            }
+            } >>== effect({ self.statsSession.recordUpload(stats: uploadStats) })
         }
     }
 
-    public func synchronizeLocalTabs(localTabs: RemoteClientsAndTabs, withServer storageClient: Sync15StorageClient, info: InfoCollections) -> SyncResult {
-        func onResponseReceived(response: StorageResponse<[Record<TabsPayload>]>) -> Success {
+    open func synchronizeLocalTabs(_ localTabs: RemoteClientsAndTabs, withServer storageClient: Sync15StorageClient, info: InfoCollections) -> SyncResult {
+        func onResponseReceived(_ response: StorageResponse<[Record<TabsPayload>]>) -> Success {
 
             func afterWipe() -> Success {
-                log.info("Fetching tabs.")
+                var downloadStats = SyncDownloadStats()
+
                 let doInsert: (Record<TabsPayload>) -> Deferred<Maybe<(Int)>> = { record in
-                    let remotes = record.payload.remoteTabs
-                    log.debug("\(remotes)")
-                    log.info("Inserting \(remotes.count) tabs for client \(record.id).")
+                    let remotes = record.payload.isValid() ? record.payload.remoteTabs : []
                     let ins = localTabs.insertOrUpdateTabsForClientGUID(record.id, tabs: remotes)
+
+                    // Since tabs are all sent within a single record, we don't count number of tabs applied
+                    // but number of records. In this case it's just one.
+                    downloadStats.applied += 1
                     ins.upon() { res in
                         if let inserted = res.successValue {
                             if inserted != remotes.count {
                                 log.warning("Only inserted \(inserted) tabs, not \(remotes.count). Malformed or missing client?")
                             }
+                            downloadStats.applied += 1
+                        } else {
+                            downloadStats.failed += 1
                         }
                     }
                     return ins
@@ -116,14 +129,14 @@ public class TabsSynchronizer: BaseSingleCollectionSynchronizer, Synchronizer {
 
                         let allDone = all(filtered.map(doInsert))
                         return allDone.bind { (results) -> Success in
-                            if let failure = find(results, f: { $0.isFailure }) {
+                            if let failure = results.find({ $0.isFailure }) {
                                 return deferMaybe(failure.failureValue!)
                             }
 
                             self.lastFetched = responseTimestamp!
                             return succeed()
                         }
-                }
+                } >>== effect({ self.statsSession.downloadStats })
             }
 
             // If this is a fresh start, do a wipe.
@@ -137,42 +150,56 @@ public class TabsSynchronizer: BaseSingleCollectionSynchronizer, Synchronizer {
         }
 
         if let reason = self.reasonToNotSync(storageClient) {
-            return deferMaybe(SyncStatus.NotStarted(reason))
+            return deferMaybe(SyncStatus.notStarted(reason))
         }
 
         let keys = self.scratchpad.keys?.value
-        let encoder = RecordEncoder<TabsPayload>(decode: { TabsPayload($0) }, encode: { $0 })
+        let encoder = RecordEncoder<TabsPayload>(decode: { TabsPayload($0) }, encode: { $0.json })
         if let encrypter = keys?.encrypter(self.collection, encoder: encoder) {
             let tabsClient = storageClient.clientForCollection(self.collection, encrypter: encrypter)
 
+            statsSession.start()
+
             if !self.remoteHasChanges(info) {
                 // upload local tabs if they've changed or we're in a fresh start.
-                uploadOurTabs(localTabs, toServer: tabsClient)
-                return deferMaybe(.Completed)
+                return uploadOurTabs(localTabs, toServer: tabsClient)
+                    >>> { deferMaybe(self.completedWithStats) }
             }
 
             return tabsClient.getSince(self.lastFetched)
                 >>== onResponseReceived
                 >>> { self.uploadOurTabs(localTabs, toServer: tabsClient) }
-                >>> { deferMaybe(.Completed) }
+                >>> { deferMaybe(self.completedWithStats) }
         }
 
         log.error("Couldn't make tabs factory.")
         return deferMaybe(FatalError(message: "Couldn't make tabs factory."))
     }
+
+    /**
+     * This is a dedicated resetting interface that does both tabs and clients at the
+     * same time.
+     */
+    public static func resetClientsAndTabsWithStorage(_ storage: ResettableSyncStorage, basePrefs: Prefs) -> Success {
+        let clientPrefs = BaseCollectionSynchronizer.prefsForCollection("clients", withBasePrefs: basePrefs)
+        let tabsPrefs = BaseCollectionSynchronizer.prefsForCollection("tabs", withBasePrefs: basePrefs)
+        clientPrefs.removeObjectForKey("lastFetched")
+        tabsPrefs.removeObjectForKey("lastFetched")
+        return storage.resetClient()
+    }
 }
 
 extension RemoteTab {
-    public func toJSON() -> JSON? {
-        let tabHistory = optFilter(history.map { $0.absoluteString })
-        if !tabHistory.isEmpty {
-            return JSON([
-                "title": title,
-                "icon": icon?.absoluteString ?? NSNull(),
-                "urlHistory": tabHistory,
-                "lastUsed": lastUsed.description,
-                ])
+    public func toDictionary() -> Dictionary<String, Any>? {
+        let tabHistory = history.compactMap { $0.absoluteString }
+        if tabHistory.isEmpty {
+            return nil
         }
-        return nil
+        return [
+            "title": title,
+            "icon": icon?.absoluteString as Any? ?? NSNull(),
+            "urlHistory": tabHistory,
+            "lastUsed": millisecondsToDecimalSeconds(lastUsed)
+        ]
     }
 }

@@ -7,15 +7,15 @@ import UIKit
 
 /* The base favicons protocol */
 public protocol Favicons {
-    func clearAllFavicons() -> Success
+    /**
+     * Returns the ID of the added favicon.
+     */
+    func addFavicon(_ icon: Favicon) -> Deferred<Maybe<Int>>
 
     /**
      * Returns the ID of the added favicon.
      */
-    func addFavicon(icon: Favicon) -> Deferred<Maybe<Int>>
+    @discardableResult func addFavicon(_ icon: Favicon, forSite site: Site) -> Deferred<Maybe<Int>>
 
-    /**
-     * Returns the ID of the added favicon.
-     */
-    func addFavicon(icon: Favicon, forSite site: Site) -> Deferred<Maybe<Int>>
+    func getFaviconImage(forSite site: Site) -> Deferred<Maybe<UIImage>>
 }

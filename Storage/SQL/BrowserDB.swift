@@ -8,214 +8,96 @@ import Shared
 
 private let log = Logger.syncLogger
 
-typealias Args = [AnyObject?]
+public typealias Args = [Any?]
 
-/* This is a base interface into our browser db. It holds arrays of tables and handles basic creation/updating of them. */
-// Version 1 - Basic history table.
-// Version 2 - Added a visits table, refactored the history table to be a GenericTable.
-// Version 3 - Added a favicons table.
-// Version 4 - Added a readinglist table.
-// Version 5 - Added the clients and the tabs tables.
-// Version 6 - Visit timestamps are now microseconds.
-// Version 7 - Eliminate most tables.
-public class BrowserDB {
-    private var db: SwiftData
-    // XXX: Increasing this should blow away old history, since we currently don't support any upgrades.
-    private let Version: Int = 7
-    private let files: FileAccessor
-    private let filename: String
-    private let secretKey: String?
-    private let schemaTable: SchemaTable
+open class BrowserDB {
+    fileprivate let db: SwiftData
 
-    private var initialized = [String]()
+    public let databasePath: String
 
     // SQLITE_MAX_VARIABLE_NUMBER = 999 by default. This controls how many ?s can
     // appear in a query string.
-    static let MaxVariableNumber = 999
+    public static let MaxVariableNumber = 999
 
-    public init(filename: String, secretKey: String? = nil, files: FileAccessor) {
-        log.debug("Initializing BrowserDB.")
-        self.files = files
-        self.filename = filename
-        self.schemaTable = SchemaTable()
-        self.secretKey = secretKey
+    public init(filename: String, schema: Schema, files: FileAccessor) {
+        log.debug("Initializing BrowserDB: \(filename).")
 
-        let file = ((try! files.getAndEnsureDirectory()) as NSString).stringByAppendingPathComponent(filename)
-        db = SwiftData(filename: file, key: secretKey, prevKey: nil)
+        self.databasePath = URL(fileURLWithPath: (try! files.getAndEnsureDirectory())).appendingPathComponent(filename).path
 
-        if AppConstants.BuildChannel == .Developer && secretKey != nil {
-            log.debug("Creating db: \(file) with secret = \(secretKey)")
-        }
-
-        // Create or update will also delete and create the database if our key was incorrect.
-        self.createOrUpdate(self.schemaTable)
+        self.db = SwiftData(filename: self.databasePath, schema: schema, files: files)
     }
 
-    // Creates a table and writes its table info into the table-table database.
-    private func createTable(db: SQLiteDBConnection, table: Table) -> TableResult {
-        log.debug("Try create \(table.name) version \(table.version)")
-        if !table.create(db, version: table.version) {
-            // If creating failed, we'll bail without storing the table info
-            log.debug("Creation failed.")
-            return .Failed
+    // Returns the SQLite version for debug purposes.
+    public func sqliteVersion() -> Deferred<Maybe<String>> {
+        return withConnection { connection -> String in
+            let result = connection.executeQueryUnsafe("SELECT sqlite_version()", factory: { row -> String in
+                return row[0] as? String ?? ""
+            }, withArgs: nil)
+            return result.asArray().first ?? ""
         }
-
-        var err: NSError? = nil
-        return schemaTable.insert(db, item: table, err: &err) > -1 ? .Created : .Failed
     }
 
-    // Updates a table and writes its table into the table-table database.
-    // Exposed internally for testing.
-    func updateTable(db: SQLiteDBConnection, table: Table) -> TableResult {
-        log.debug("Trying update \(table.name) version \(table.version)")
-        var from = 0
-        // Try to find the stored version of the table
-        let cursor = schemaTable.query(db, options: QueryOptions(filter: table.name))
-        if cursor.count > 0 {
-            if let info = cursor[0] as? TableInfoWrapper {
-                from = info.version
+    // Returns the SQLite compile_options for debug purposes.
+    public func sqliteCompileOptions() -> Deferred<Maybe<[String]>> {
+        return withConnection { connection -> [String] in
+            let result = connection.executeQueryUnsafe("PRAGMA compile_options", factory: { row -> String in
+                return row[0] as? String ?? ""
+            }, withArgs: nil)
+            return result.asArray().filter({ !$0.isEmpty })
+        }
+    }
+
+    // Returns the SQLite secure_delete setting for debug purposes.
+    public func sqliteSecureDelete() -> Deferred<Maybe<Int>> {
+        return withConnection { connection -> Int in
+            let result = connection.executeQueryUnsafe("PRAGMA secure_delete", factory: { row -> Int in
+                return row[0] as? Int ?? 0
+            }, withArgs: nil)
+            return result.asArray().first ?? 0
+        }
+    }
+
+    // For testing purposes or other cases where we want to ensure that this `BrowserDB`
+    // instance has been initialized (schema is created/updated).
+    public func touch() -> Success {
+        return withConnection { connection -> Void in
+            guard let _ = connection as? ConcreteSQLiteDBConnection else {
+                throw DatabaseError(description: "Could not establish a database connection")
             }
         }
-
-        // If the versions match, no need to update
-        if from == table.version {
-            return .Exists
-        }
-
-        if !table.updateTable(db, from: from, to: table.version) {
-            // If the update failed, we'll bail without writing the change to the table-table.
-            log.debug("Updating failed.")
-            return .Failed
-        }
-
-        var err: NSError? = nil
-
-        // Yes, we UPDATE OR INSERT… because we might be transferring ownership of a database table
-        // to a different Table. It'll trigger exists, and thus take the update path, but we won't
-        // necessarily have an existing schema entry -- i.e., we'll be updating from 0.
-        if schemaTable.update(db, item: table, err: &err) > 0 ||
-           schemaTable.insert(db, item: table, err: &err) > 0 {
-            return .Updated
-        }
-        return .Failed
     }
 
-    // Utility for table classes. They should call this when they're initialized to force
-    // creation of the table in the database.
-    func createOrUpdate(table: Table) -> Bool {
-        log.debug("Create or update \(table.name) version \(table.version).")
-        var success = true
-        db = SwiftData(filename: ((try! files.getAndEnsureDirectory()) as NSString).stringByAppendingPathComponent(self.filename), key: secretKey)
-        let doCreate = { (connection: SQLiteDBConnection) -> () in
-            switch self.createTable(connection, table: table) {
-            case .Created:
-                success = true
-                connection.checkpoint()
-                return
-            case .Exists:
-                log.debug("Table already exists.")
-                success = true
-                return
-            default:
-                success = false
-            }
-        }
-
-        if let _ = db.transaction({ connection -> Bool in
-            // If the table doesn't exist, we'll create it
-            if !table.exists(connection) {
-                doCreate(connection)
-            } else {
-                // Otherwise, we'll update it
-                switch self.updateTable(connection, table: table) {
-                case .Updated:
-                    success = true
-                    connection.checkpoint()
-                    break
-                case .Exists:
-                    log.debug("Table already exists.")
-                    success = true
-                    break
-                default:
-                    log.error("Update failed for \(table.name). Dropping and recreating.")
-
-                    table.drop(connection)
-                    var err: NSError? = nil
-                    self.schemaTable.delete(connection, item: table, err: &err)
-
-                    doCreate(connection)
-                }
-            }
-
-            return success
-        }) {
-            // Err getting a transaction
-            success = false
-        }
-
-        // If we failed, move the file and try again. This will probably break things that are already
-        // attached and expecting a working DB, but at least we should be able to restart.
-        if !success {
-            log.debug("Couldn't create or update \(table.name).")
-            log.debug("Attempting to move \(self.filename) to another location.")
-
-            // Note that a backup file might already exist! We append a counter to avoid this.
-            var bakCounter = 0
-            var bak: String
-            repeat {
-                bak = "\(self.filename).bak.\(++bakCounter)"
-            } while self.files.exists(bak)
-
-            do {
-                try self.files.move(self.filename, toRelativePath: bak)
-                success = true
-            } catch _ {
-                success = false
-            }
-            assert(success)
-
-            if let _ = db.transaction({ connection -> Bool in
-                doCreate(connection)
-                return success
-            }) {
-                success = false;
-            }
-        }
-
-        return success
+    /*
+     * Opening a WAL-using database with a hot journal cannot complete in read-only mode.
+     * The supported mechanism for a read-only query against a WAL-using SQLite database is to use PRAGMA query_only,
+     * but this isn't all that useful for us, because we have a mixed read/write workload.
+     */
+    @discardableResult func withConnection<T>(flags: SwiftData.Flags = .readWriteCreate, _ callback: @escaping (_ connection: SQLiteDBConnection) throws -> T) -> Deferred<Maybe<T>> {
+        return db.withConnection(flags, callback)
     }
 
-    typealias IntCallback = (connection: SQLiteDBConnection, inout err: NSError?) -> Int
-
-    func withConnection<T>(flags flags: SwiftData.Flags, inout err: NSError?, callback: (connection: SQLiteDBConnection, inout err: NSError?) -> T) -> T {
-        var res: T!
-        err = db.withConnection(flags) { connection in
-            var err: NSError? = nil
-            res = callback(connection: connection, err: &err)
-            return err
-        }
-        return res
+    func transaction<T>(_ callback: @escaping (_ connection: SQLiteDBConnection) throws -> T) -> Deferred<Maybe<T>> {
+        return db.transaction(callback)
     }
 
-    func withWritableConnection<T>(inout err: NSError?, callback: (connection: SQLiteDBConnection, inout err: NSError?) -> T) -> T {
-        return withConnection(flags: SwiftData.Flags.ReadWrite, err: &err, callback: callback)
+    @discardableResult func vacuum() -> Success {
+        log.debug("Vacuuming a BrowserDB.")
+
+        return withConnection({ connection -> Void in
+            try connection.vacuum()
+        })
     }
 
-    func withReadableConnection<T>(inout err: NSError?, callback: (connection: SQLiteDBConnection, inout err: NSError?) -> Cursor<T>) -> Cursor<T> {
-        return withConnection(flags: SwiftData.Flags.ReadOnly, err: &err, callback: callback)
-    }
+    @discardableResult func checkpoint() -> Success {
+        log.debug("Checkpointing a BrowserDB.")
 
-    func transaction(inout err: NSError?, callback: (connection: SQLiteDBConnection, inout err: NSError?) -> Bool) {
-        db.transaction { connection in
-            var err: NSError? = nil
-            return callback(connection: connection, err: &err)
+        return transaction { connection in
+            connection.checkpoint()
         }
     }
-}
 
-extension BrowserDB {
-    public class func varlist(count: Int) -> String {
-        return "(" + Array(count: count, repeatedValue: "?").joinWithSeparator(", ") + ")"
+    public class func varlist(_ count: Int) -> String {
+        return "(" + Array(repeating: "?", count: count).joined(separator: ", ") + ")"
     }
 
     enum InsertOperation: String {
@@ -243,7 +125,7 @@ extension BrowserDB {
      * A failure anywhere in the sequence will cause immediate return of failure, but
      * will not roll back — use a transaction if you need one.
      */
-    func bulkInsert(table: String, op: InsertOperation, columns: [String], values: [Args]) -> Success {
+    func bulkInsert(_ table: String, op: InsertOperation, columns: [String], values: [Args]) -> Success {
         // Note that there's a limit to how many ?s can be in a single query!
         // So here we execute 999 / (columns * rows) insertions per query.
         // Note that we can't use variables for the column names, so those don't affect the count.
@@ -257,13 +139,13 @@ extension BrowserDB {
         // Sanity check.
         assert(values[0].count == variablesPerRow)
 
-        let cols = columns.joinWithSeparator(", ")
+        let cols = columns.joined(separator: ", ")
         let queryStart = "\(op.rawValue) INTO \(table) (\(cols)) VALUES "
 
         let varString = BrowserDB.varlist(variablesPerRow)
 
-        let insertChunk: [Args] -> Success = { vals -> Success in
-            let valuesString = Array(count: vals.count, repeatedValue: varString).joinWithSeparator(", ")
+        let insertChunk: ([Args]) -> Success = { vals -> Success in
+            let valuesString = Array(repeating: varString, count: vals.count).joined(separator: ", ")
             let args: Args = vals.flatMap { $0 }
             return self.run(queryStart + valuesString, withArgs: args)
         }
@@ -283,69 +165,76 @@ extension BrowserDB {
         return walk(chunks, f: { insertChunk(Array($0)) })
     }
 
-    func runWithConnection<T>(block: (connection: SQLiteDBConnection, inout err: NSError?) -> T) -> Deferred<Maybe<T>> {
-        return DeferredDBOperation(db: db, block: block).start()
-    }
+    func write(_ sql: String, withArgs args: Args? = nil) -> Deferred<Maybe<Int>> {
+        return withConnection { connection -> Int in
+            try connection.executeChange(sql, withArgs: args)
 
-    func write(sql: String, withArgs args: Args? = nil) -> Deferred<Maybe<Int>> {
-        return self.runWithConnection() { (connection, err) -> Int in
-            err = connection.executeChange(sql, withArgs: args)
-            if err == nil {
-                let modified = connection.numberOfRowsModified
-                log.debug("Modified rows: \(modified).")
-                return modified
-            }
-            return 0
+            let modified = connection.numberOfRowsModified
+            log.debug("Modified rows: \(modified).")
+            return modified
         }
     }
 
-    public func close() {
-        db.close()
+    public func forceClose() {
+        db.forceClose()
     }
 
-    func run(sql: String, withArgs args: Args? = nil) -> Success {
+    public func reopenIfClosed() {
+        db.reopenIfClosed()
+    }
+
+    public func run(_ sql: String, withArgs args: Args? = nil) -> Success {
         return run([(sql, args)])
     }
 
+    func run(_ commands: [String]) -> Success {
+        return run(commands.map { (sql: $0, args: nil) })
+    }
+
     /**
-     * Runs an array of sql commands. Note: These will all run in order in a transaction and will block
-     * the callers thread until they've finished. If any of them fail the operation will abort (no more
-     * commands will be run) and the transaction will rollback, returning a DatabaseError.
+     * Runs an array of SQL commands. Note: These will all run in order in a transaction and will block
+     * the caller's thread until they've finished. If any of them fail the operation will abort (no more
+     * commands will be run) and the transaction will roll back, returning a DatabaseError.
      */
-    func run(sql: [(sql: String, args: Args?)]) -> Success {
-        var err: NSError? = nil
-        self.transaction(&err) { (conn, err) -> Bool in
-            for (sql, args) in sql {
-                err = conn.executeChange(sql, withArgs: args)
-                if err != nil {
-                    return false
-                }
+    func run(_ commands: [(sql: String, args: Args?)]) -> Success {
+        if commands.isEmpty {
+            return succeed()
+        }
+
+        return transaction { connection -> Void in
+            for (sql, args) in commands {
+                try connection.executeChange(sql, withArgs: args)
             }
-            return true
-        }
-
-        if let err = err {
-            return deferMaybe(DatabaseError(err: err))
-        }
-
-        return succeed()
-    }
-
-    func runQuery<T>(sql: String, args: Args?, factory: SDRow -> T) -> Deferred<Maybe<Cursor<T>>> {
-        return runWithConnection { (connection, err) -> Cursor<T> in
-            return connection.executeQuery(sql, factory: factory, withArgs: args)
         }
     }
-}
 
-extension SQLiteDBConnection {
-    func tablesExist(names: Args) -> Bool {
-        let count = names.count
-        let orClause = Array(count: count, repeatedValue: "name = ?").joinWithSeparator(" OR ")
-        let tablesSQL = "SELECT name FROM sqlite_master WHERE type = 'table' AND (\(orClause))"
+    public func runQuery<T>(_ sql: String, args: Args?, factory: @escaping (SDRow) -> T) -> Deferred<Maybe<Cursor<T>>> {
+        return withConnection { connection -> Cursor<T> in
+            connection.executeQuery(sql, factory: factory, withArgs: args)
+        }
+    }
 
-        let res = self.executeQuery(tablesSQL, factory: StringFactory, withArgs: names)
-        log.debug("\(res.count) tables exist. Expected \(count)")
-        return res.count > 0
+    public func runQueryConcurrently<T>(_ sql: String, args: Args?, factory: @escaping (SDRow) -> T) -> Deferred<Maybe<Cursor<T>>> {
+        return withConnection(flags: .readOnly) { connection -> Cursor<T> in
+            connection.executeQuery(sql, factory: factory, withArgs: args)
+        }
+    }
+
+    func runQueryUnsafe<T, U>(_ sql: String, args: Args?, factory: @escaping (SDRow) -> T, block: @escaping (Cursor<T>) throws -> U) -> Deferred<Maybe<U>> {
+        return withConnection { connection -> U in
+            let cursor = connection.executeQueryUnsafe(sql, factory: factory, withArgs: args)
+            defer { cursor.close() }
+            return try block(cursor)
+        }
+    }
+
+    func queryReturnsResults(_ sql: String, args: Args? = nil) -> Deferred<Maybe<Bool>> {
+        return runQuery(sql, args: args, factory: { _ in true })
+         >>== { deferMaybe($0[0] ?? false) }
+    }
+
+    func queryReturnsNoResults(_ sql: String, args: Args? = nil) -> Deferred<Maybe<Bool>> {
+        return runQuery(sql, args: nil, factory: { _ in false })
+          >>== { deferMaybe($0[0] ?? true) }
     }
 }

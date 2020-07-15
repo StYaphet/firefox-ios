@@ -9,14 +9,11 @@ private var appDelegate: AppDelegate.Type
 if AppConstants.IsRunningTest {
     appDelegate = TestAppDelegate.self
 } else {
-    switch AppConstants.BuildChannel {
-    case .Aurora:
-        appDelegate = AuroraAppDelegate.self
-    case .Developer:
-        appDelegate = AppDelegate.self
-    case .Release:
-        appDelegate = AppDelegate.self
-    }
+    appDelegate = AppDelegate.self
 }
 
-UIApplicationMain(Process.argc, Process.unsafeArgv, NSStringFromClass(UIApplication.self), NSStringFromClass(appDelegate))
+// Ignore SIGPIPE exceptions globally
+// https://stackoverflow.com/questions/108183/how-to-prevent-sigpipes-or-handle-them-properly
+signal(SIGPIPE, SIG_IGN)
+
+_ = UIApplicationMain(CommandLine.argc, CommandLine.unsafeArgv, NSStringFromClass(UIApplication.self), NSStringFromClass(appDelegate))

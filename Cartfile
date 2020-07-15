@@ -1,14 +1,22 @@
-github "Alamofire/Alamofire"        "swift-2.0"
-github "mozilla/Base32"             "swift-2.0"        # So we don't have to tag a release for Emily's fixes.
-github "mozilla/Deferred"           "master"           # Making Deferred extensible in swift 2.0
-github "swisspol/GCDWebServer"                         # Implicit: latest tag.
-github "kif-framework/KIF"          "master"
-github "ZaBlanc/RaptureXML"         "master"
-github "mozilla/readability"        "master"
-github "rs/SDWebImage"              "master"           # To get the fix for libwebp
-github "Masonry/Snap"               "Swift-2.0"
-github "st3fan/SQLite.swift"        "swift-2"
-github "CEWendel/SWTableViewCell"                      # Implicit: latest tag.
-github "st3fan/SWXMLHash"           "xcode-7.0"        # So we get Swift 2.0 fixes.
-github "DaveWoodCom/XCGLogger"      "swift_2.0"        # Previously: swift_1.2
-github "sleroux/google-breakpad-ios" "master"
+github "getsentry/sentry-cocoa"             ~> 4.2
+github "SnapKit/SnapKit"                    ~> 5.0
+github "SDWebImage/SDWebImage"              ~> 5.0
+github "swisspol/GCDWebServer"              ~> 3.3
+github "kif-framework/KIF"                  "v3.7.8"
+github "adjust/ios_sdk"                     "v4.18.3"
+github "mozilla-mobile/onepassword-app-extension"    "add-framework-support"
+github "jrendel/SwiftKeychainWrapper"       ~> 3.2.0
+github "DaveWoodCom/XCGLogger"              ~> 7.0
+github "cezheng/Fuzi"                       ~> 3.0
+github "SwiftyJSON/SwiftyJSON"              ~> 5.0
+github "google/EarlGrey"                    "master"
+github "mozilla-mobile/telemetry-ios"      ~> 1.1
+github "mozilla-mobile/MappaMundi"          "master"
+github "Leanplum/Leanplum-iOS-SDK"          ~> 2.7.2
+github "mozilla-services/shavar-prod-lists" "72.0"
+# Use release version of application-services
+github "mozilla/application-services"      "v60.0.0"
+github "mozilla/glean" "v31.1.0"
+
+# Use interim binary version of application-services
+# binary "https://circleci.com/api/v1.1/project/github/mozilla/application-services/2862/artifacts/0/dist/mozilla.app-services.json" ~> 0.0.1-snapshot # mozilla/application-services@fb5c540e99133980911216055425688f22a27be2

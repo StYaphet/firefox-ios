@@ -2,169 +2,151 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-import Foundation
 import Shared
 import WebKit
 import UIKit
-
-// Needs to be in sync with Client Clearables.
-private enum Clearable: String {
-    case History = "Browsing History"
-    case Logins = "Saved Logins"
-    case Cache = "Cache"
-    case OfflineData = "Offline Website Data"
-    case Cookies = "Cookies"
-}
-
-private let AllClearables = Set([Clearable.History, Clearable.Logins, Clearable.Cache, Clearable.OfflineData, Clearable.Cookies])
+import EarlGrey
+import GCDWebServers
+@testable import Client
 
 class ClearPrivateDataTests: KIFTestCase, UITextFieldDelegate {
-    private var webRoot: String!
+
+    fileprivate var webRoot: String!
 
     override func setUp() {
+        super.setUp()
         webRoot = SimplePageServer.start()
+        BrowserUtils.configEarlGrey()
+        BrowserUtils.dismissFirstRunUI()
     }
 
     override func tearDown() {
-        BrowserUtils.clearHistoryItems(tester())
+        BrowserUtils.resetToAboutHome()
     }
 
-    private func openClearPrivateDataDialog() {
-        tester().tapViewWithAccessibilityLabel("Show Tabs")
-        tester().tapViewWithAccessibilityLabel("Settings")
-        tester().tapViewWithAccessibilityLabel("Clear Private Data")
-    }
-
-    private func closeClearPrivateDataDialog(lastTabLabel lastTabLabel: String) {
-        tester().tapViewWithAccessibilityLabel("Settings")
-        tester().tapViewWithAccessibilityLabel("Done")
-        tester().tapViewWithAccessibilityLabel(lastTabLabel)
-    }
-
-    private func clearPrivateData(clearables: Set<Clearable>) {
-        let webView = tester().waitForViewWithAccessibilityLabel("Web content") as! WKWebView
-        let lastTabLabel = webView.title!.isEmpty ? "home" : webView.title!
-
-        openClearPrivateDataDialog()
-
-        // Disable all items that we don't want to clear.
-        for clearable in AllClearables {
-            // If we don't wait here, setOn:forSwitchWithAccessibilityLabel tries to use the UITableViewCell
-            // instead of the UISwitch. KIF bug?
-            tester().waitForViewWithAccessibilityLabel(clearable.rawValue)
-
-            tester().setOn(clearables.contains(clearable), forSwitchWithAccessibilityLabel: clearable.rawValue)
-        }
-
-        tester().tapViewWithAccessibilityLabel("Clear Private Data", traits: UIAccessibilityTraitButton)
-
-        closeClearPrivateDataDialog(lastTabLabel: lastTabLabel)
-    }
-
-    func visitSites(noOfSites noOfSites: Int) -> [(title: String, domain: String, url: String)] {
-        var urls: [(title: String, domain: String, url: String)] = []
+    func visitSites(noOfSites: Int) -> [(title: String, domain: String, dispDomain: String, url: String)] {
+        var urls: [(title: String, domain: String, dispDomain: String, url: String)] = []
         for pageNo in 1...noOfSites {
-            tester().tapViewWithAccessibilityIdentifier("url")
-            let url = "\(webRoot)/numberedPage.html?page=\(pageNo)"
-            tester().clearTextFromAndThenEnterTextIntoCurrentFirstResponder("\(url)\n")
+            let url = "\(webRoot!)/numberedPage.html?page=\(pageNo)"
+            BrowserUtils.enterUrlAddressBar(typeUrl: url)
+
+            tester().waitForAnimationsToFinish()
             tester().waitForWebViewElementWithAccessibilityLabel("Page \(pageNo)")
-            let tuple: (title: String, domain: String, url: String) = ("Page \(pageNo)", NSURL(string: url)!.normalizedHost()!, url)
+            let dom = URL(string: url)!.normalizedHost!
+            let index = dom.index(dom.startIndex, offsetBy: 7)
+            let dispDom = dom.substring(to: index)  // On IPhone, it only displays first 8 chars
+            let tuple: (title: String, domain: String, dispDomain: String, url: String)
+            = ("Page \(pageNo)", dom, dispDom, url)
             urls.append(tuple)
         }
-        BrowserUtils.resetToAboutHome(tester())
+        BrowserUtils.resetToAboutHome()
         return urls
     }
 
-    func anyDomainsExistOnTopSites(domains: Set<String>) {
-        for domain in domains {
-            if self.tester().viewExistsWithLabel(domain) {
+    func anyDomainsExistOnTopSites(_ domains: Set<String>, fulldomains: Set<String>) {
+        if checkDomains(domains: domains) == true {
+            return
+        } else {
+            if checkDomains(domains: fulldomains) == true {
                 return
             }
         }
-        XCTFail("Couldn't find any domains in top sites.")
+       XCTFail("Couldn't find any domains in top sites.")
+    }
+
+    private func checkDomains(domains: Set<String>) -> Bool {
+        var errorOrNil: NSError?
+
+        for domain in domains {
+            let withoutDot = domain.replacingOccurrences(of: ".", with: " ")
+            let matcher = grey_allOf([grey_accessibilityLabel(withoutDot),
+                                              grey_kindOfClass(NSClassFromString("Client.TopSiteItemCell")!),
+                                              grey_sufficientlyVisible()])
+            EarlGrey.selectElement(with: matcher).assert(grey_notNil(), error: &errorOrNil)
+
+            if errorOrNil == nil {
+                return true
+            }
+        }
+        return false
     }
 
     func testRemembersToggles() {
-        clearPrivateData([Clearable.History, Clearable.Logins])
-
-        openClearPrivateDataDialog()
+        BrowserUtils.clearPrivateData([BrowserUtils.Clearable.History], swipe:false)
+        BrowserUtils.openClearPrivateDataDialog(false)
 
         // Ensure the toggles match our settings.
         [
-            (Clearable.Cache, "0"),
-            (Clearable.Cookies, "0"),
-            (Clearable.OfflineData, "0"),
-            (Clearable.History, "1"),
-            (Clearable.Logins, "1"),
-        ].forEach { clearable, value in
-            XCTAssertEqual(value, tester().waitForViewWithAccessibilityLabel(clearable.rawValue).accessibilityValue)
+            (BrowserUtils.Clearable.Cache, "0"),
+            (BrowserUtils.Clearable.Cookies, "0"),
+            (BrowserUtils.Clearable.OfflineData, "0"),
+            (BrowserUtils.Clearable.History, "1")
+        ].forEach { clearable, switchValue in
+            XCTAssertNotNil(tester()
+                .waitForView(withAccessibilityLabel: clearable.rawValue, value: switchValue, traits: UIAccessibilityTraits.none))
         }
-
-        closeClearPrivateDataDialog(lastTabLabel: "home")
-    }
-
-    func testClearsTopSitesPanel() {
-        let urls = visitSites(noOfSites: 2)
-        let domains = Set<String>(urls.map { $0.domain })
-
-        tester().tapViewWithAccessibilityLabel("Top sites")
-
-        // Only one will be found -- we collapse by domain.
-        anyDomainsExistOnTopSites(domains)
-
-        clearPrivateData([Clearable.History])
-
-        XCTAssertFalse(tester().viewExistsWithLabel(urls[0].title), "Expected to have removed top site panel \(urls[0])")
-        XCTAssertFalse(tester().viewExistsWithLabel(urls[1].title), "We shouldn't find the other URL, either.")
-    }
-
-    func testDisabledHistoryDoesNotClearTopSitesPanel() {
-        let urls = visitSites(noOfSites: 2)
-        let domains = Set<String>(urls.map { $0.domain })
-
-        anyDomainsExistOnTopSites(domains)
-        clearPrivateData(AllClearables.subtract([Clearable.History]))
-        anyDomainsExistOnTopSites(domains)
+        BrowserUtils.closeClearPrivateDataDialog()
     }
 
     func testClearsHistoryPanel() {
         let urls = visitSites(noOfSites: 2)
 
-        tester().tapViewWithAccessibilityLabel("History")
-        let url1 = "\(urls[0].title), \(urls[0].url)"
-        let url2 = "\(urls[1].title), \(urls[1].url)"
-        XCTAssertTrue(tester().viewExistsWithLabel(url1), "Expected to have history row \(url1)")
-        XCTAssertTrue(tester().viewExistsWithLabel(url2), "Expected to have history row \(url2)")
+        let url1 = urls[0].url
+        let url2 = urls[1].url
+        BrowserUtils.openLibraryMenu(tester())
+        // Open History Panel
+        tester().tapView(withAccessibilityIdentifier: "LibraryPanels.History")
+        tester().waitForView(withAccessibilityLabel: url1)
+        tester().waitForView(withAccessibilityLabel: url2)
 
-        clearPrivateData([Clearable.History])
+        BrowserUtils.closeLibraryMenu(tester())
+        BrowserUtils.clearPrivateData([BrowserUtils.Clearable.History], swipe: false)
+        BrowserUtils.openLibraryMenu(tester())
+        // Open History Panel
+        tester().waitForAbsenceOfView(withAccessibilityLabel: url1)
+        tester().waitForAbsenceOfView(withAccessibilityLabel: url2)
 
-        tester().tapViewWithAccessibilityLabel("History")
-        XCTAssertFalse(tester().viewExistsWithLabel(url1), "Expected to have removed history row \(url1)")
-        XCTAssertFalse(tester().viewExistsWithLabel(url2), "Expected to have removed history row \(url2)")
+        BrowserUtils.closeLibraryMenu(tester())
     }
 
     func testDisabledHistoryDoesNotClearHistoryPanel() {
         let urls = visitSites(noOfSites: 2)
+        var errorOrNil: NSError?
 
-        tester().tapViewWithAccessibilityLabel("History")
-        let url1 = "\(urls[0].title), \(urls[0].url)"
-        let url2 = "\(urls[1].title), \(urls[1].url)"
-        XCTAssertTrue(tester().viewExistsWithLabel(url1), "Expected to have history row \(url1)")
-        XCTAssertTrue(tester().viewExistsWithLabel(url2), "Expected to have history row \(url2)")
+        let url1 = urls[0].url
+        let url2 = urls[1].url
+        BrowserUtils.clearPrivateData(BrowserUtils.AllClearables.subtracting([BrowserUtils.Clearable.History]), swipe: false)
+        tester().waitForAnimationsToFinish()
+        BrowserUtils.openLibraryMenu(tester())
+        // Open History Panel
+        tester().tapView(withAccessibilityIdentifier: "LibraryPanels.History")
+        tester().tapView(withAccessibilityIdentifier: "LibraryPanels.Bookmarks")
+        tester().tapView(withAccessibilityIdentifier: "LibraryPanels.History")
+        tester().waitForAnimationsToFinish()
+        let historyListShown = GREYCondition(name: "Wait for history to appear", block: {
+            var errorOrNil: NSError?
+            EarlGrey.selectElement(with: grey_accessibilityLabel(url1))
+                .assert(grey_notNil(), error: &errorOrNil)
+            let success = errorOrNil == nil
+            return success
+        }).wait(withTimeout: 20)
+        GREYAssertTrue(historyListShown, reason: "Failed to display history list")
 
-        clearPrivateData(AllClearables.subtract([Clearable.History]))
+        EarlGrey.selectElement(with: grey_accessibilityLabel(url1))
+            .assert(grey_notNil(), error: &errorOrNil)
+        EarlGrey.selectElement(with: grey_accessibilityLabel(url2))
+            .assert(grey_notNil(), error: &errorOrNil)
 
-        XCTAssertTrue(tester().viewExistsWithLabel(url1), "Expected to not have removed history row \(url1)")
-        XCTAssertTrue(tester().viewExistsWithLabel(url2), "Expected to not have removed history row \(url2)")
+        // Close History (and so Library) panel
+        BrowserUtils.closeLibraryMenu(tester())
     }
 
     func testClearsCookies() {
-        tester().tapViewWithAccessibilityIdentifier("url")
-        let url = "\(webRoot)/numberedPage.html?page=1"
-        tester().clearTextFromAndThenEnterTextIntoCurrentFirstResponder("\(url)\n")
+        let url = "\(webRoot!)/numberedPage.html?page=1"
+        BrowserUtils.enterUrlAddressBar(typeUrl: url)
         tester().waitForWebViewElementWithAccessibilityLabel("Page 1")
 
-        let webView = tester().waitForViewWithAccessibilityLabel("Web content") as! WKWebView
+        let webView = tester().waitForView(withAccessibilityLabel: "Web content") as! WKWebView
 
         // Set and verify a dummy cookie value.
         setCookies(webView, cookie: "foo=bar")
@@ -174,98 +156,81 @@ class ClearPrivateDataTests: KIFTestCase, UITextFieldDelegate {
         XCTAssertEqual(cookies.sessionStorage, "foo=bar")
 
         // Verify that cookies are not cleared when Cookies is deselected.
-        clearPrivateData(AllClearables.subtract([Clearable.Cookies]))
+        BrowserUtils.clearPrivateData(BrowserUtils.AllClearables.subtracting([BrowserUtils.Clearable.Cookies]), swipe: false)
         cookies = getCookies(webView)
         XCTAssertEqual(cookies.cookie, "foo=bar")
         XCTAssertEqual(cookies.localStorage, "foo=bar")
         XCTAssertEqual(cookies.sessionStorage, "foo=bar")
 
         // Verify that cookies are cleared when Cookies is selected.
-        clearPrivateData([Clearable.Cookies])
+        BrowserUtils.clearPrivateData([BrowserUtils.Clearable.Cookies], swipe: false)
         cookies = getCookies(webView)
         XCTAssertEqual(cookies.cookie, "")
-        XCTAssertNil(cookies.localStorage)
-        XCTAssertNil(cookies.sessionStorage)
+        XCTAssertEqual(cookies.localStorage, "null")
+        XCTAssertEqual(cookies.sessionStorage, "null")
     }
 
-    @available(iOS 9.0, *)
     func testClearsCache() {
         let cachedServer = CachedPageServer()
         let cacheRoot = cachedServer.start()
         let url = "\(cacheRoot)/cachedPage.html"
-        tester().tapViewWithAccessibilityIdentifier("url")
-        tester().clearTextFromAndThenEnterTextIntoCurrentFirstResponder("\(url)\n")
+        BrowserUtils.enterUrlAddressBar(typeUrl: url)
         tester().waitForWebViewElementWithAccessibilityLabel("Cache test")
 
-        let webView = tester().waitForViewWithAccessibilityLabel("Web content") as! WKWebView
+        let webView = tester().waitForView(withAccessibilityLabel: "Web content") as! WKWebView
         let requests = cachedServer.requests
 
         // Verify that clearing non-cache items will keep the page in the cache.
-        clearPrivateData(AllClearables.subtract([Clearable.Cache]))
+        BrowserUtils.clearPrivateData(BrowserUtils.AllClearables.subtracting([BrowserUtils.Clearable.Cache]), swipe: false)
         webView.reload()
         XCTAssertEqual(cachedServer.requests, requests)
 
         // Verify that clearing the cache will fire a new request.
-        clearPrivateData([Clearable.Cache])
+        BrowserUtils.clearPrivateData([BrowserUtils.Clearable.Cache], swipe: false)
         webView.reload()
         XCTAssertEqual(cachedServer.requests, requests + 1)
     }
 
-    func testClearsLogins() {
-        tester().tapViewWithAccessibilityIdentifier("url")
-        let url = "\(webRoot)/loginForm.html"
-        tester().clearTextFromAndThenEnterTextIntoCurrentFirstResponder("\(url)\n")
-        tester().waitForWebViewElementWithAccessibilityLabel("Submit")
-
-        // The form should be empty when we first load it.
-        XCTAssertFalse(tester().hasWebViewElementWithAccessibilityLabel("foo"))
-        XCTAssertFalse(tester().hasWebViewElementWithAccessibilityLabel("bar"))
-
-        // Fill it in and submit.
-        tester().enterText("foo", intoWebViewInputWithName: "username")
-        tester().enterText("bar", intoWebViewInputWithName: "password")
-        tester().tapWebViewElementWithAccessibilityLabel("Submit")
-
-        // Say "Yes" to the remember password prompt.
-        tester().tapViewWithAccessibilityLabel("Yes")
-
-        // Verify that the form is autofilled after reloading.
-        tester().tapViewWithAccessibilityLabel("Reload")
-        XCTAssert(tester().hasWebViewElementWithAccessibilityLabel("foo"))
-        XCTAssert(tester().hasWebViewElementWithAccessibilityLabel("bar"))
-
-        // Ensure that clearing other data has no effect on the saved logins.
-        clearPrivateData(AllClearables.subtract([Clearable.Logins]))
-        tester().tapViewWithAccessibilityLabel("Reload")
-        XCTAssert(tester().hasWebViewElementWithAccessibilityLabel("foo"))
-        XCTAssert(tester().hasWebViewElementWithAccessibilityLabel("bar"))
-
-        // Ensure that clearing logins clears the form.
-        clearPrivateData([Clearable.Logins])
-        tester().tapViewWithAccessibilityLabel("Reload")
-        XCTAssertFalse(tester().hasWebViewElementWithAccessibilityLabel("foo"))
-        XCTAssertFalse(tester().hasWebViewElementWithAccessibilityLabel("bar"))
-    }
-
-    private func setCookies(webView: WKWebView, cookie: String) {
-        let expectation = expectationWithDescription("Set cookie")
+    fileprivate func setCookies(_ webView: WKWebView, cookie: String) {
+        let expectation = self.expectation(description: "Set cookie")
         webView.evaluateJavaScript("document.cookie = \"\(cookie)\"; localStorage.cookie = \"\(cookie)\"; sessionStorage.cookie = \"\(cookie)\";") { result, _ in
             expectation.fulfill()
         }
-        waitForExpectationsWithTimeout(10, handler: nil)
+        waitForExpectations(timeout: 10, handler: nil)
     }
 
-    private func getCookies(webView: WKWebView) -> (cookie: String, localStorage: String?, sessionStorage: String?) {
+    fileprivate func getCookies(_ webView: WKWebView) -> (cookie: String, localStorage: String?, sessionStorage: String?) {
         var cookie: (String, String?, String?)!
-        let expectation = expectationWithDescription("Got cookie")
+        var value: String!
+        let expectation = self.expectation(description: "Got cookie")
+
         webView.evaluateJavaScript("JSON.stringify([document.cookie, localStorage.cookie, sessionStorage.cookie])") { result, _ in
-            let cookies = JSON.parse(result as! String).asArray!
-            cookie = (cookies[0].asString!, cookies[1].asString, cookies[2].asString)
+            value = result as! String
             expectation.fulfill()
         }
-        waitForExpectationsWithTimeout(10, handler: nil)
+
+        waitForExpectations(timeout: 10, handler: nil)
+        value = value.replacingOccurrences(of: "[", with: "")
+        value = value.replacingOccurrences(of: "]", with: "")
+        value = value.replacingOccurrences(of: "\"", with: "")
+        let items = value.components(separatedBy: ",")
+        cookie = (items[0], items[1], items[2])
         return cookie
     }
+
+    func testClearsTrackingProtectionSafelist() {
+        let wait = expectation(description: "wait for file write")
+        ContentBlocker.shared.safelist(enable: true, url: URL(string: "http://www.mozilla.com")!) {
+            wait.fulfill()
+        }
+        waitForExpectations(timeout: 5)
+
+        BrowserUtils.clearPrivateData([BrowserUtils.Clearable.TrackingProtection], swipe: false)
+
+        let data = ContentBlocker.shared.readSafelistFile()
+        XCTAssert(data == nil || data!.isEmpty)
+    }
+
 }
 
 /// Server that keeps track of requests.
@@ -274,16 +239,17 @@ private class CachedPageServer {
 
     func start() -> String {
         let webServer = GCDWebServer()
-        webServer.addHandlerForMethod("GET", path: "/cachedPage.html", requestClass: GCDWebServerRequest.self) { (request) -> GCDWebServerResponse! in
-            self.requests++
-            return GCDWebServerDataResponse(HTML: "<html><head><title>Cached page</title></head><body>Cache test</body></html>")
+        webServer.addHandler(forMethod: "GET", path: "/cachedPage.html", request: GCDWebServerRequest.self) { (request) -> GCDWebServerResponse? in
+            self.requests += 1
+            return GCDWebServerDataResponse(html: "<html><head><title>Cached page</title></head><body>Cache test</body></html>")
         }
 
-        webServer.startWithPort(0, bonjourName: nil)
+        webServer.start(withPort: 0, bonjourName: nil)
 
         // We use 127.0.0.1 explicitly here, rather than localhost, in order to avoid our
         // history exclusion code (Bug 1188626).
-        let webRoot = "http://127.0.0.1:\(webServer.port)"
+        let port = (webServer.port)
+        let webRoot = "http://127.0.0.1:\(port)"
         return webRoot
     }
 }

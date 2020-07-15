@@ -2,7 +2,8 @@
 #define Client_SyncTests_Bridging_Header_h
 
 #import <Foundation/Foundation.h>
-#import "GCDWebServer.h"
-#import "GCDWebServerDataResponse.h"
+#import "Shared-Bridging-Header.h"
+#import "Storage-Bridging-Header.h"
+#import "Sync-Bridging-Header.h"
 
 #endif

@@ -5,53 +5,75 @@
 import Foundation
 import WebKit
 import Shared
+import EarlGrey
+import SwiftyJSON
+@testable import Client
 
 class SessionRestoreTests: KIFTestCase {
-    private var webRoot: String!
+    fileprivate var webRoot: String!
 
     override func setUp() {
         webRoot = SimplePageServer.start()
+        BrowserUtils.dismissFirstRunUI()
+        super.setUp()
     }
 
     func testTabRestore() {
-        let url1 = "\(webRoot)/numberedPage.html?page=1"
-        let url2 = "\(webRoot)/numberedPage.html?page=2"
-        let url3 = "\(webRoot)/numberedPage.html?page=3"
+        let url1 = "\(webRoot!)/numberedPage.html?page=1"
+        let url2 = "\(webRoot!)/numberedPage.html?page=2"
+        let url3 = "\(webRoot!)/numberedPage.html?page=3"
 
         // Build a session restore URL from the current homepage URL.
-        var jsonDict = [String: AnyObject]()
+        var jsonDict = [String: Any]()
         jsonDict["history"] = [url1, url2, url3]
-        jsonDict["currentPage"] = -1
-        let escapedJSON = JSON.stringify(jsonDict, pretty: false).stringByAddingPercentEncodingWithAllowedCharacters(NSCharacterSet.URLQueryAllowedCharacterSet())!
-        let webView = tester().waitForViewWithAccessibilityLabel("Web content") as! WKWebView
-        let restoreURL = NSURL(string: "/about/sessionrestore?history=\(escapedJSON)", relativeToURL: webView.URL!)
+        jsonDict["currentPage"] = -1 as Any?
+        let json = JSON(jsonDict)
+        let escapedJSON = json.stringify()?.addingPercentEncoding(withAllowedCharacters: .URLAllowed)
+        let webView = tester().waitForView(withAccessibilityLabel: "Web content") as! WKWebView
+        let restoreURL = PrivilegedRequest(url: URL(string: "\(InternalURL.baseUrl)/\(InternalURL.Path.sessionrestore.rawValue)?history=\(escapedJSON!)")!).url
 
         // Enter the restore URL and verify the back/forward history.
         // After triggering the restore, the session should look like this:
         //   about:home, page1, *page2*, page3
         // where page2 is active.
-        tester().tapViewWithAccessibilityIdentifier("url")
-        tester().clearTextFromAndThenEnterTextIntoCurrentFirstResponder("\(restoreURL!.absoluteString)\n")
+        BrowserUtils.enterUrlAddressBar(typeUrl: restoreURL!.absoluteString)
         tester().waitForWebViewElementWithAccessibilityLabel("Page 2")
-        tester().tapViewWithAccessibilityLabel("Back")
+        EarlGrey.selectElement(with: grey_accessibilityLabel("Back"))
+            .perform(grey_tap())
+
         tester().waitForWebViewElementWithAccessibilityLabel("Page 1")
-        tester().tapViewWithAccessibilityLabel("Back")
-        tester().waitForViewWithAccessibilityLabel("Top sites")
+        EarlGrey.selectElement(with: grey_accessibilityLabel("Back"))
+            .perform(grey_tap())
+        let wentBack = GREYCondition(name: "Check browser went back", block: {
+            var errorOrNil: NSError?
+            let matcher = grey_allOf([grey_accessibilityID("TopSitesCell"),
+                                              grey_sufficientlyVisible()])
+            EarlGrey.selectElement(with: matcher).assert(grey_notNil(), error: &errorOrNil)
+            let success = errorOrNil == nil
+            return success
+        }).wait(withTimeout: 5)
+        GREYAssertTrue(wentBack, reason: "Didn't go back")
+
         let canGoBack: Bool
         do {
-            try tester().tryFindingTappableViewWithAccessibilityLabel("Back")
+            try tester().tryFindingTappableView(withAccessibilityLabel: "Back")
             canGoBack = true
         } catch _ {
             canGoBack = false
         }
         XCTAssertFalse(canGoBack, "Reached the beginning of browser history")
-        tester().tapViewWithAccessibilityLabel("Forward")
-        tester().tapViewWithAccessibilityLabel("Forward")
-        tester().tapViewWithAccessibilityLabel("Forward")
+
+        EarlGrey.selectElement(with: grey_accessibilityLabel("Forward"))
+            .perform(grey_tap())
+        EarlGrey.selectElement(with: grey_accessibilityLabel("Forward"))
+            .perform(grey_tap())
+        EarlGrey.selectElement(with: grey_accessibilityLabel("Forward"))
+            .perform(grey_tap())
+        tester().waitForAnimationsToFinish()
         tester().waitForWebViewElementWithAccessibilityLabel("Page 3")
         let canGoForward: Bool
         do {
-            try tester().tryFindingTappableViewWithAccessibilityLabel("Forward")
+            try tester().tryFindingTappableView(withAccessibilityLabel: "Forward")
             canGoForward = true
         } catch _ {
             canGoForward = false
@@ -60,6 +82,7 @@ class SessionRestoreTests: KIFTestCase {
     }
 
     override func tearDown() {
-        BrowserUtils.resetToAboutHome(tester())
+        BrowserUtils.resetToAboutHome()
+        BrowserUtils.clearPrivateData()
     }
 }

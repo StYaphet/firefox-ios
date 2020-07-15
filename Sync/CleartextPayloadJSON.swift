@@ -4,42 +4,58 @@
 
 import Foundation
 import Shared
+import SwiftyJSON
 
-public class CleartextPayloadJSON: JSON {
+open class BasePayloadJSON {
+    let json: JSON
     required public init(_ jsonString: String) {
-        super.init(JSON.parse(jsonString))
+        self.json = JSON(parseJSON: jsonString)
     }
 
-    override public init(_ json: JSON) {
-        super.init(json)
+    public init(_ json: JSON) {
+        self.json = json
     }
 
     // Override me.
     public func isValid() -> Bool {
-        return !isError
+        return self.json.type != .unknown &&
+               self.json.error == nil
     }
 
-    public var id: String {
-        return self["id"].asString!
+    subscript(key: String) -> JSON {
+        get {
+            return json[key]
+        }
+    }
+}
+
+/**
+ * http://docs.services.mozilla.com/sync/objectformats.html
+ * "In addition to these custom collection object structures, the
+ *  Encrypted DataObject adds fields like id and deleted."
+ */
+open class CleartextPayloadJSON: BasePayloadJSON {
+    // Override me.
+    override open func isValid() -> Bool {
+        return super.isValid() && self["id"].isString()
     }
 
-    public var deleted: Bool {
+    open var id: String {
+        return self["id"].string!
+    }
+
+    open var deleted: Bool {
         let d = self["deleted"]
-        if d.isBool {
-            return d.asBool!
+        if let bool = d.bool {
+            return bool
         } else {
-            return false;
+            return false
         }
     }
 
     // Override me.
-    public func equalPayloads (obj: CleartextPayloadJSON) -> Bool {
+    // Doesn't check id. Should it?
+    open func equalPayloads (_ obj: CleartextPayloadJSON) -> Bool {
         return self.deleted == obj.deleted
-    }
-}
-
-extension JSON {
-    public var isStringOrNull: Bool {
-        return self.isString || self.isNull
     }
 }

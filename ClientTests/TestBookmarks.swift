@@ -2,34 +2,42 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+@testable import Client
 import Foundation
-import XCTest
+import Shared
 import Storage
+
+import XCTest
 
 class TestBookmarks: ProfileTest {
     func testBookmarks() {
         withTestProfile { profile -> Void in
             for i in 0...10 {
                 let bookmark = ShareItem(url: "http://www.example.com/\(i)", title: "Example \(i)", favicon: nil)
-                profile.bookmarks.shareItem(bookmark)
+                _ = profile.places.createBookmark(parentGUID: BookmarkRoots.MobileFolderGUID, url: bookmark.url, title: bookmark.title).value
             }
 
-            let expectation = self.expectationWithDescription("asynchronous request")
-            profile.bookmarks.modelForFolder(BookmarkRoots.MobileFolderGUID, success: { (model: BookmarksModel) in
-                // 11 bookmarks plus our two suggested sites.
-                XCTAssertEqual(model.current.count, 13, "We create \(model.current.count) stub bookmarks in the Mobile Bookmarks folder.")
-                let bookmark = model.current[0]
-                XCTAssertTrue(bookmark is BookmarkItem)
-                XCTAssertEqual((bookmark as! BookmarkItem).url, "http://www.example.com/0", "Example URL found.")
-                expectation.fulfill()
-            }, failure: { (Any) -> () in
-                XCTFail("Should not have failed to get mock bookmarks.")
-                expectation.fulfill()
-            })
+            let expectation = self.expectation(description: "asynchronous request")
+            profile.places.getBookmarksTree(rootGUID: BookmarkRoots.MobileFolderGUID, recursive: false) >>== { folder in
+                guard let mobileFolder = folder as? BookmarkFolder else {
+                    XCTFail("Should not have failed to get mock bookmarks.")
+                    expectation.fulfill()
+                    return
+                }
 
-            self.waitForExpectationsWithTimeout(10.0, handler:nil)
+                // 11 bookmarks plus our two suggested sites.
+                XCTAssertEqual(mobileFolder.children!.count, 11, "We create 11 stub bookmarks in the Mobile Bookmarks folder.")
+                let bookmark = mobileFolder.children![0]
+                XCTAssertTrue(bookmark is BookmarkItem)
+                XCTAssertTrue((bookmark as! BookmarkItem).url.hasPrefix("http://www.example.com/"), "Example URL found.")
+                expectation.fulfill()
+            }
+
+            self.waitForExpectations(timeout: 15.0, handler:nil)
+
             // This'll do.
-            try! profile.files.remove("mock.db")
+            _ = profile.places.forceClose()
+            try? profile.files.remove("profile-test_places.db")
         }
     }
 }

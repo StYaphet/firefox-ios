@@ -2,23 +2,21 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-import Foundation
-
+import GCDWebServers
+@testable import Client
 import UIKit
+
 import XCTest
 
 class SearchTests: XCTestCase {
-    private let uriFixup = URIFixup()
-
     func testParsing() {
         let parser = OpenSearchParser(pluginMode: true)
-        let file = NSBundle.mainBundle().pathForResource("google", ofType: "xml", inDirectory: "SearchPlugins/en")
-        let engine: OpenSearchEngine! = parser.parse(file!)
+        let file = Bundle.main.path(forResource: "google-b-m", ofType: "xml", inDirectory: "SearchPlugins/")
+        let engine: OpenSearchEngine! = parser.parse(file!, engineID: "google-b-m")
         XCTAssertEqual(engine.shortName, "Google")
-        XCTAssertNil(engine.description)
 
         // Test regular search queries.
-        XCTAssertEqual(engine.searchURLForQuery("foobar")!.absoluteString, "https://www.google.com/search?q=foobar&ie=utf-8&oe=utf-8")
+        XCTAssertEqual(engine.searchURLForQuery("foobar")!.absoluteString, "https://www.google.com/search?q=foobar&ie=utf-8&oe=utf-8&client=firefox-b-m")
 
         // Test search suggestion queries.
         XCTAssertEqual(engine.suggestURLForQuery("foobar")!.absoluteString, "https://www.google.com/complete/search?client=firefox&q=foobar")
@@ -29,6 +27,7 @@ class SearchTests: XCTestCase {
         checkValidURL("http://www.mozilla.org", afterFixup: "http://www.mozilla.org")
         checkValidURL("about:", afterFixup: "about:")
         checkValidURL("about:config", afterFixup: "about:config")
+        checkValidURL("about: config", afterFixup: "about:%20config")
         checkValidURL("file:///f/o/o", afterFixup: "file:///f/o/o")
         checkValidURL("ftp://ftp.mozilla.org", afterFixup: "ftp://ftp.mozilla.org")
         checkValidURL("foo.bar", afterFixup: "http://foo.bar")
@@ -39,31 +38,38 @@ class SearchTests: XCTestCase {
         checkInvalidURL("foobar")
         checkInvalidURL("foo bar")
         checkInvalidURL("mozilla. org")
-        checkInvalidURL("about: config")
         checkInvalidURL("123")
         checkInvalidURL("a/b")
+        checkInvalidURL("创业咖啡")
+        checkInvalidURL("创业咖啡 中国")
+        checkInvalidURL("创业咖啡. 中国")
     }
 
-    private func checkValidURL(beforeFixup: String, afterFixup: String) {
-        XCTAssertEqual(uriFixup.getURL(beforeFixup)!.absoluteString, afterFixup)
+    func testURIFixupPunyCode() {
+        checkValidURL("http://创业咖啡.中国/", afterFixup: "http://xn--vhq70hq9bhxa.xn--fiqs8s/")
+        checkValidURL("创业咖啡.中国", afterFixup: "http://xn--vhq70hq9bhxa.xn--fiqs8s")
+        checkValidURL(" 创业咖啡.中国 ", afterFixup: "http://xn--vhq70hq9bhxa.xn--fiqs8s")
     }
 
-    private func checkInvalidURL(beforeFixup: String) {
-        XCTAssertNil(uriFixup.getURL(beforeFixup))
+    fileprivate func checkValidURL(_ beforeFixup: String, afterFixup: String) {
+        XCTAssertEqual(URIFixup.getURL(beforeFixup)!.absoluteString, afterFixup)
+    }
+
+    fileprivate func checkInvalidURL(_ beforeFixup: String) {
+        XCTAssertNil(URIFixup.getURL(beforeFixup))
     }
 
     func testSuggestClient() {
         let webServerBase = startMockSuggestServer()
-
-        let engine = OpenSearchEngine(shortName: "Mock engine", description: nil, image: nil, searchTemplate: "", suggestTemplate: "\(webServerBase)?q={searchTerms}")
+        let engine = OpenSearchEngine(engineID: "mock", shortName: "Mock engine", image: UIImage(), searchTemplate: "", suggestTemplate: "\(webServerBase)?q={searchTerms}",
+            isCustomEngine: false)
         let client = SearchSuggestClient(searchEngine: engine, userAgent: "Fx-testSuggestClient")
 
-
-        let query1 = self.expectationWithDescription("foo query")
+        let query1 = self.expectation(description: "foo query")
         client.query("foo", callback: { response, error in
             withExtendedLifetime(client) {
                 if error != nil {
-                    XCTFail("Error: \(error?.description)")
+                    XCTFail("Error: \(error?.description ?? "nil")")
                 }
 
                 XCTAssertEqual(response![0], "foo")
@@ -73,13 +79,13 @@ class SearchTests: XCTestCase {
                 query1.fulfill()
             }
         })
-        waitForExpectationsWithTimeout(10, handler: nil)
+        waitForExpectations(timeout: 10, handler: nil)
 
-        let query2 = self.expectationWithDescription("foo bar query")
+        let query2 = self.expectation(description: "foo bar query")
         client.query("foo bar", callback: { response, error in
             withExtendedLifetime(client) {
                 if error != nil {
-                    XCTFail("Error: \(error?.description)")
+                    XCTFail("Error: \(error?.description ?? "nil")")
                 }
 
                 XCTAssertEqual(response![0], "foo bar soap")
@@ -89,15 +95,51 @@ class SearchTests: XCTestCase {
                 query2.fulfill()
             }
         })
-        waitForExpectationsWithTimeout(10, handler: nil)
+        waitForExpectations(timeout: 10, handler: nil)
     }
 
-    private func startMockSuggestServer() -> String {
+    func testExtractingOfSearchTermsFromURL() {
+        let parser = OpenSearchParser(pluginMode: true)
+        var file = Bundle.main.path(forResource: "google-b-m", ofType: "xml", inDirectory: "SearchPlugins/")!
+        let googleEngine: OpenSearchEngine! = parser.parse(file, engineID: "google")
+
+        // create URL
+        let searchTerm = "Foo Bar"
+        let encodedSeachTerm = searchTerm.replacingOccurrences(of: " ", with: "+")
+        let googleSearchURL = URL(string: "https://www.google.com/search?q=\(encodedSeachTerm)&ie=utf-8&oe=utf-8&gws_rd=cr&ei=I0UyVp_qK4HtUoytjagM")
+        let duckDuckGoSearchURL = URL(string: "https://duckduckgo.com/?q=\(encodedSeachTerm)&ia=about")
+        let invalidSearchURL = URL(string: "https://www.google.co.uk")
+        let yaaniSearchURL = URL(string: "https://tr.yaani.com.tr/?src=1#q=\(encodedSeachTerm)")
+
+        // check it correctly matches google search term given google config
+        XCTAssertEqual(searchTerm, googleEngine.queryForSearchURL(googleSearchURL))
+
+        // check it doesn't match when the URL is not a search URL
+        XCTAssertNil(googleEngine.queryForSearchURL(invalidSearchURL))
+
+        // check that it matches given a different configuration
+        file = Bundle.main.path(forResource: "duckduckgo", ofType: "xml", inDirectory: "SearchPlugins/")!
+        let duckDuckGoEngine: OpenSearchEngine! = parser.parse(file, engineID: "duckduckgo")
+        XCTAssertEqual(searchTerm, duckDuckGoEngine.queryForSearchURL(duckDuckGoSearchURL))
+
+        // check it doesn't match search URLs for different configurations
+        XCTAssertNil(duckDuckGoEngine.queryForSearchURL(googleSearchURL))
+
+        // check that if you pass in a nil URL that everything works
+        XCTAssertNil(duckDuckGoEngine.queryForSearchURL(nil))
+
+        // check that if search engine that uses fragment matches search term
+        file = Bundle.main.path(forResource: "yaani", ofType: "xml", inDirectory: "SearchPlugins/")!
+        let yaaniEngine: OpenSearchEngine = parser.parse(file, engineID: "Yaani")!
+        XCTAssertEqual(searchTerm, yaaniEngine.queryForSearchURL(yaaniSearchURL))
+    }
+
+    fileprivate func startMockSuggestServer() -> String {
         let webServer: GCDWebServer = GCDWebServer()
 
-        webServer.addHandlerForMethod("GET", path: "/", requestClass: GCDWebServerRequest.self) { (request) -> GCDWebServerResponse! in
+        webServer.addHandler(forMethod: "GET", path: "/", request: GCDWebServerRequest.self) { (request) -> GCDWebServerResponse? in
             var suggestions: [String]!
-            let query = request.query["q"] as! String
+            let query = request.query!["q"]!
             switch query {
             case "foo":
                 suggestions = ["foo", "foo2", "foo you"]
@@ -106,10 +148,10 @@ class SearchTests: XCTestCase {
             default:
                 XCTFail("Unexpected query: \(query)")
             }
-            return GCDWebServerDataResponse(JSONObject: [query, suggestions])
+            return GCDWebServerDataResponse(jsonObject: [query, suggestions as Any])
         }
 
-        if !webServer.startWithPort(0, bonjourName: nil) {
+        if !webServer.start(withPort: 0, bonjourName: nil) {
             XCTFail("Can't start the GCDWebServer")
         }
 

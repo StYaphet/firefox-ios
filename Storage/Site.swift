@@ -5,50 +5,59 @@
 import UIKit
 import Shared
 
-protocol Identifiable {
+public protocol Identifiable: Equatable {
     var id: Int? { get set }
 }
 
-public enum IconType: Int {
-    case Icon = 0
-    case AppleIcon = 1
-    case AppleIconPrecomposed = 2
-    case Guess = 3
-    case Local = 4
-    case NoneFound = 5
+public func ==<T>(lhs: T, rhs: T) -> Bool where T: Identifiable {
+    return lhs.id == rhs.id
 }
 
-public class Favicon: Identifiable {
-    var id: Int? = nil
-    var img: UIImage? = nil
+open class Favicon: Identifiable {
+    open var id: Int?
 
     public let url: String
-    public let date: NSDate
-    public var width: Int?
-    public var height: Int?
-    public let type: IconType
+    public let date: Date
+    open var width: Int?
+    open var height: Int?
 
-    public init(url: String, date: NSDate = NSDate(), type: IconType) {
+    public init(url: String, date: Date = Date()) {
         self.url = url
         self.date = date
-        self.type = type
     }
 }
 
 // TODO: Site shouldn't have all of these optional decorators. Include those in the
 // cursor results, perhaps as a tuple.
-public class Site : Identifiable {
-    var id: Int? = nil
-    var guid: String? = nil
+open class Site: Identifiable {
+    open var id: Int?
+    var guid: String?
+
+    open var tileURL: URL {
+        return URL(string: url)?.domainURL ?? URL(string: "about:blank")!
+    }
 
     public let url: String
     public let title: String
+    open var metadata: PageMetadata?
      // Sites may have multiple favicons. We'll return the largest.
-    public var icon: Favicon?
-    public var latestVisit: Visit?
+    open var icon: Favicon?
+    open var latestVisit: Visit?
+    open fileprivate(set) var bookmarked: Bool?
 
-    public init(url: String, title: String) {
+    public convenience init(url: String, title: String) {
+        self.init(url: url, title: title, bookmarked: false, guid: nil)
+    }
+
+    public init(url: String, title: String, bookmarked: Bool?, guid: String? = nil) {
         self.url = url
         self.title = title
+        self.bookmarked = bookmarked
+        self.guid = guid
     }
+
+    open func setBookmarked(_ bookmarked: Bool) {
+        self.bookmarked = bookmarked
+    }
+
 }

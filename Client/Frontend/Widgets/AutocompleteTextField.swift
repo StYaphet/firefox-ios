@@ -9,30 +9,52 @@ import Shared
 
 /// Delegate for the text field events. Since AutocompleteTextField owns the UITextFieldDelegate,
 /// callers must use this instead.
-protocol AutocompleteTextFieldDelegate: class {
-    func autocompleteTextField(autocompleteTextField: AutocompleteTextField, didEnterText text: String)
-    func autocompleteTextFieldShouldReturn(autocompleteTextField: AutocompleteTextField) -> Bool
-    func autocompleteTextFieldShouldClear(autocompleteTextField: AutocompleteTextField) -> Bool
-    func autocompleteTextFieldDidBeginEditing(autocompleteTextField: AutocompleteTextField)
-}
-
-private struct AutocompleteTextFieldUX {
-    static let HighlightColor = UIColor(rgb: 0xccdded)
+protocol AutocompleteTextFieldDelegate: AnyObject {
+    func autocompleteTextField(_ autocompleteTextField: AutocompleteTextField, didEnterText text: String)
+    func autocompleteTextFieldShouldReturn(_ autocompleteTextField: AutocompleteTextField) -> Bool
+    func autocompleteTextFieldShouldClear(_ autocompleteTextField: AutocompleteTextField) -> Bool
+    func autocompleteTextFieldDidCancel(_ autocompleteTextField: AutocompleteTextField)
+    func autocompletePasteAndGo(_ autocompleteTextField: AutocompleteTextField)
 }
 
 class AutocompleteTextField: UITextField, UITextFieldDelegate {
     var autocompleteDelegate: AutocompleteTextFieldDelegate?
+    // AutocompleteTextLabel repersents the actual autocomplete text.
+    // The textfields "text" property only contains the entered text, while this label holds the autocomplete text
+    // This makes sure that the autocomplete doesnt mess with keyboard suggestions provided by third party keyboards.
+    private var autocompleteTextLabel: UILabel?
+    private var hideCursor: Bool = false
 
-    private var completionActive = false
-    private var canAutocomplete = true
-    private var enteredText = ""
-    private var previousSuggestion = ""
-    private var notifyTextChanged: (() -> ())? = nil
+    private let copyShortcutKey = "c"
+
+    var isSelectionActive: Bool {
+        return autocompleteTextLabel != nil
+    }
+
+    // This variable is a solution to get the right behavior for refocusing
+    // the AutocompleteTextField. The initial transition into Overlay Mode
+    // doesn't involve the user interacting with AutocompleteTextField.
+    // Thus, we update shouldApplyCompletion in touchesBegin() to reflect whether
+    // the highlight is active and then the text field is updated accordingly
+    // in touchesEnd() (eg. applyCompletion() is called or not)
+    fileprivate var notifyTextChanged: (() -> Void)?
+    private var lastReplacement: String?
+
+    static var textSelectionColor = URLBarColor.TextSelectionHighlight(labelMode: UIColor(), textFieldMode: nil)
 
     override var text: String? {
         didSet {
-            // SELtextDidChange is not called when directly setting the text property, so fire it manually.
-            SELtextDidChange(self)
+            super.text = text
+            self.textDidChange(self)
+        }
+    }
+
+    override var accessibilityValue: String? {
+        get {
+            return (self.text ?? "") + (self.autocompleteTextLabel?.text ?? "")
+        }
+        set(value) {
+            super.accessibilityValue = value
         }
     }
 
@@ -46,175 +68,258 @@ class AutocompleteTextField: UITextField, UITextFieldDelegate {
         commonInit()
     }
 
-    private func commonInit() {
+    fileprivate func commonInit() {
         super.delegate = self
-        super.addTarget(self, action: "SELtextDidChange:", forControlEvents: UIControlEvents.EditingChanged)
+        super.addTarget(self, action: #selector(AutocompleteTextField.textDidChange), for: .editingChanged)
         notifyTextChanged = debounce(0.1, action: {
-            if self.editing {
-                self.autocompleteDelegate?.autocompleteTextField(self, didEnterText: self.enteredText)
+            if self.isEditing {
+                self.autocompleteDelegate?.autocompleteTextField(self, didEnterText: self.normalizeString(self.text ?? ""))
             }
         })
     }
 
-    func highlightAll() {
-        if let text = text {
-            if !text.isEmpty {
-                let attributedString = NSMutableAttributedString(string: text)
-                attributedString.addAttribute(NSBackgroundColorAttributeName, value: AutocompleteTextFieldUX.HighlightColor, range: NSMakeRange(0, (text).characters.count))
-                attributedText = attributedString
+    override var keyCommands: [UIKeyCommand]? {
+        return [
+            UIKeyCommand(input: UIKeyCommand.inputLeftArrow, modifierFlags: [], action: #selector(self.handleKeyCommand(sender:))),
+            UIKeyCommand(input: UIKeyCommand.inputRightArrow, modifierFlags: [], action: #selector(self.handleKeyCommand(sender:))),
+            UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(self.handleKeyCommand(sender:))),
+            UIKeyCommand(input: copyShortcutKey, modifierFlags: .command, action: #selector(self.handleKeyCommand(sender:)))
+        ]
+    }
 
-                enteredText = ""
-                completionActive = true
-            }
+    @objc func handleKeyCommand(sender: UIKeyCommand) {
+        guard let input = sender.input else {
+            return
         }
+        switch input {
+        case UIKeyCommand.inputLeftArrow:
+            UnifiedTelemetry.recordEvent(category: .action, method: .press, object: .keyCommand, extras: ["action": "autocomplete-left-arrow"])
+            if isSelectionActive {
+                applyCompletion()
 
-        selectedTextRange = textRangeFromPosition(beginningOfDocument, toPosition: beginningOfDocument)
+                // Set the current position to the beginning of the text.
+                selectedTextRange = textRange(from: beginningOfDocument, to: beginningOfDocument)
+            } else if let range = selectedTextRange {
+                if range.start == beginningOfDocument {
+                    break
+                }
+
+                guard let cursorPosition = position(from: range.start, offset: -1) else {
+                    break
+                }
+
+                selectedTextRange = textRange(from: cursorPosition, to: cursorPosition)
+            }
+        case UIKeyCommand.inputRightArrow:
+            UnifiedTelemetry.recordEvent(category: .action, method: .press, object: .keyCommand, extras: ["action": "autocomplete-right-arrow"])
+            if isSelectionActive {
+                applyCompletion()
+
+                // Set the current position to the end of the text.
+                selectedTextRange = textRange(from: endOfDocument, to: endOfDocument)
+            } else if let range = selectedTextRange {
+                if range.end == endOfDocument {
+                    break
+                }
+
+                guard let cursorPosition = position(from: range.end, offset: 1) else {
+                    break
+                }
+
+                selectedTextRange = textRange(from: cursorPosition, to: cursorPosition)
+            }
+        case UIKeyCommand.inputEscape:
+            UnifiedTelemetry.recordEvent(category: .action, method: .press, object: .keyCommand, extras: ["action": "autocomplete-cancel"])
+            autocompleteDelegate?.autocompleteTextFieldDidCancel(self)
+        case copyShortcutKey:
+            if isSelectionActive {
+                UIPasteboard.general.string = self.autocompleteTextLabel?.text
+            } else {
+                if let selectedTextRange = self.selectedTextRange {
+                    UIPasteboard.general.string = self.text(in: selectedTextRange)
+                }
+            }
+        default:
+            break
+        }
+    }
+
+    fileprivate func normalizeString(_ string: String) -> String {
+        return string.lowercased().stringByTrimmingLeadingCharactersInSet(CharacterSet.whitespaces)
     }
 
     /// Commits the completion by setting the text and removing the highlight.
-    private func applyCompletion() {
-        if completionActive {
-            if let text = text {
-                self.attributedText = NSAttributedString(string: text)
-                enteredText = text
-            }
-            completionActive = false
-            previousSuggestion = ""
+    fileprivate func applyCompletion() {
 
-            // This is required to notify the SearchLoader that some text has changed and previous
-            // cached query will get updated.
-            notifyTextChanged?()
+        // Clear the current completion, then set the text without the attributed style.
+        let text = (self.text ?? "") + (self.autocompleteTextLabel?.text ?? "")
+        let didRemoveCompletion = removeCompletion()
+        self.text = text
+        hideCursor = false
+        // Move the cursor to the end of the completion.
+        if didRemoveCompletion {
+            selectedTextRange = textRange(from: endOfDocument, to: endOfDocument)
         }
     }
 
-    /// Removes the autocomplete-highlighted text from the field.
-    private func removeCompletion() {
-        if completionActive {
-            // Workaround for stuck highlight bug.
-            if enteredText.characters.count == 0 {
-                attributedText = NSAttributedString(string: " ")
-            }
-
-            attributedText = NSAttributedString(string: enteredText)
-            completionActive = false
-        }
+    /// Removes the autocomplete-highlighted. Returns true if a completion was actually removed
+    @objc @discardableResult fileprivate func removeCompletion() -> Bool {
+        let hasActiveCompletion = isSelectionActive
+        autocompleteTextLabel?.removeFromSuperview()
+        autocompleteTextLabel = nil
+        return hasActiveCompletion
     }
 
-    // `shouldChangeCharactersInRange` is called before the text changes, and SELtextDidChange is called after.
-    // Since the text has changed, remove the completion here, and SELtextDidChange will fire the callback to
+    @objc fileprivate func clear() {
+        text = ""
+        removeCompletion()
+        autocompleteDelegate?.autocompleteTextField(self, didEnterText: "")
+    }
+
+    // `shouldChangeCharactersInRange` is called before the text changes, and textDidChange is called after.
+    // Since the text has changed, remove the completion here, and textDidChange will fire the callback to
     // get the new autocompletion.
-    func textField(textField: UITextField, shouldChangeCharactersInRange range: NSRange, replacementString string: String) -> Bool {
-        // Accept autocompletions if we're adding characters.
-        canAutocomplete = !string.isEmpty
-
-        if completionActive {
-            if string.isEmpty {
-                // Characters are being deleted, so clear the autocompletion, but don't change the text.
-                removeCompletion()
-                return false
-            }
-            removeCompletionIfRequiredForEnteredString(string)
+    func textField(_ textField: UITextField, shouldChangeCharactersIn range: NSRange, replacementString string: String) -> Bool {
+        // This happens when you begin typing overtop the old highlighted
+        // text immediately after focusing the text field. We need to trigger
+        // a `didEnterText` that looks like a `clear()` so that the SearchLoader
+        // can reset itself since it will only lookup results if the new text is
+        // longer than the previous text.
+        if lastReplacement == nil {
+            autocompleteDelegate?.autocompleteTextField(self, didEnterText: "")
         }
+
+        lastReplacement = string
         return true
     }
 
-    private func removeCompletionIfRequiredForEnteredString(string: String) {
-        // If user-entered text does not start with previous suggestion then remove the completion.
-        let actualEnteredString = enteredText + string
-        if !previousSuggestion.startsWith(actualEnteredString) {
-            removeCompletion()
+    func setAutocompleteSuggestion(_ suggestion: String?) {
+        let text = self.text ?? ""
+
+        guard let suggestion = suggestion, isEditing && markedTextRange == nil else {
+            hideCursor = false
+            return
         }
-        enteredText = actualEnteredString
-    }
 
-    func setAutocompleteSuggestion(suggestion: String?) {
-        // Setting the autocomplete suggestion during multi-stage input will break the session since the text
-        // is not fully entered. If `markedTextRange` is nil, that means the multi-stage input is complete, so
-        // it's safe to append the suggestion.
-        if let suggestion = suggestion where editing && canAutocomplete && markedTextRange == nil {
-            // Check that the length of the entered text is shorter than the length of the suggestion.
-            // This ensures that completionActive is true only if there are remaining characters to
-            // suggest (which will suppress the caret).
-            if suggestion.startsWith(enteredText) && (enteredText).characters.count < suggestion.characters.count {
-                let endingString = suggestion.substringFromIndex(suggestion.startIndex.advancedBy(enteredText.characters.count))
-                let completedAndMarkedString = NSMutableAttributedString(string: suggestion)
-                completedAndMarkedString.addAttribute(NSBackgroundColorAttributeName, value: AutocompleteTextFieldUX.HighlightColor, range: NSMakeRange(enteredText.characters.count, endingString.characters.count))
-                attributedText = completedAndMarkedString
-                completionActive = true
-                previousSuggestion = suggestion
-                return
-            }
+        let normalized = normalizeString(text)
+        guard suggestion.hasPrefix(normalized) && normalized.count < suggestion.count else {
+            hideCursor = false
+            return
         }
-        removeCompletion()
+
+        let suggestionText = String(suggestion[suggestion.index(suggestion.startIndex, offsetBy: normalized.count)...])
+        let autocompleteText = NSMutableAttributedString(string: suggestionText)
+
+        let color = AutocompleteTextField.textSelectionColor.labelMode
+        autocompleteText.addAttribute(NSAttributedString.Key.backgroundColor, value: color, range: NSRange(location: 0, length: suggestionText.count))
+
+        autocompleteTextLabel?.removeFromSuperview() // should be nil. But just in case
+        autocompleteTextLabel = createAutocompleteLabelWith(autocompleteText)
+        if let l = autocompleteTextLabel {
+            addSubview(l)
+            hideCursor = true
+            forceResetCursor()
+        }
     }
 
-    func textFieldDidBeginEditing(textField: UITextField) {
-        autocompleteDelegate?.autocompleteTextFieldDidBeginEditing(self)
+    override func caretRect(for position: UITextPosition) -> CGRect {
+        return hideCursor ? CGRect.zero : super.caretRect(for: position)
     }
 
-    func textFieldShouldEndEditing(textField: UITextField) -> Bool {
+    private func createAutocompleteLabelWith(_ autocompleteText: NSAttributedString) -> UILabel {
+        let label = UILabel()
+        var frame = self.bounds
+        label.attributedText = autocompleteText
+        label.font = self.font
+        label.accessibilityIdentifier = "autocomplete"
+        label.backgroundColor = self.backgroundColor
+        label.textColor = self.textColor
+        label.textAlignment = .left
+
+        let enteredTextSize = self.attributedText?.boundingRect(with: self.frame.size, options: NSStringDrawingOptions.usesLineFragmentOrigin, context: nil)
+        frame.origin.x = (enteredTextSize?.width.rounded() ?? 0)
+        frame.size.width = self.frame.size.width - frame.origin.x
+        frame.size.height = self.frame.size.height - 1
+        label.frame = frame
+        return label
+    }
+
+    func textFieldShouldEndEditing(_ textField: UITextField) -> Bool {
         applyCompletion()
         return true
     }
 
-    func textFieldShouldReturn(textField: UITextField) -> Bool {
+    func textFieldShouldReturn(_ textField: UITextField) -> Bool {
+        applyCompletion()
         return autocompleteDelegate?.autocompleteTextFieldShouldReturn(self) ?? true
     }
 
-    func textFieldShouldClear(textField: UITextField) -> Bool {
+    func textFieldShouldClear(_ textField: UITextField) -> Bool {
         removeCompletion()
         return autocompleteDelegate?.autocompleteTextFieldShouldClear(self) ?? true
     }
 
-    override func setMarkedText(markedText: String?, selectedRange: NSRange) {
+    override func setMarkedText(_ markedText: String?, selectedRange: NSRange) {
         // Clear the autocompletion if any provisionally inserted text has been
         // entered (e.g., a partial composition from a Japanese keyboard).
         removeCompletion()
         super.setMarkedText(markedText, selectedRange: selectedRange)
     }
 
-    func SELtextDidChange(textField: UITextField) {
-        if completionActive {
-            // Immediately reuse the previous suggestion if it's still valid.
-            setAutocompleteSuggestion(previousSuggestion)
+    func setTextWithoutSearching(_ text: String) {
+        super.text = text
+        hideCursor = autocompleteTextLabel != nil
+        removeCompletion()
+    }
+
+   @objc func textDidChange(_ textField: UITextField) {
+        hideCursor = autocompleteTextLabel != nil
+        removeCompletion()
+
+        let isAtEnd = selectedTextRange?.start == endOfDocument
+        let isKeyboardReplacingText = lastReplacement != nil
+        if isKeyboardReplacingText, isAtEnd, markedTextRange == nil {
+            notifyTextChanged?()
         } else {
-            // Updates entered text while completion is not active. If it is 
-            // active, enteredText will already be updated from 
-            // removeCompletionIfRequiredForEnteredString.
-            enteredText = text ?? ""
+            hideCursor = false
         }
-        notifyTextChanged?()
+    }
+
+    // Reset the cursor to the end of the text field.
+    // This forces `caretRect(for position: UITextPosition)` to be called which will decide if we should show the cursor
+    // This exists because ` caretRect(for position: UITextPosition)` is not called after we apply an autocompletion.
+    private func forceResetCursor() {
+        selectedTextRange = nil
+        selectedTextRange = textRange(from: endOfDocument, to: endOfDocument)
     }
 
     override func deleteBackward() {
-        removeCompletion()
-        super.deleteBackward()
-    }
-
-    override func caretRectForPosition(position: UITextPosition) -> CGRect {
-        return completionActive ? CGRectZero : super.caretRectForPosition(position)
-    }
-
-    override func touchesBegan(touches: Set<UITouch>, withEvent event: UIEvent?) {
-        if !completionActive {
-            super.touchesBegan(touches, withEvent: event)
-        }
-    }
-
-    override func touchesMoved(touches: Set<UITouch>, withEvent event: UIEvent?) {
-        if !completionActive {
-            super.touchesMoved(touches, withEvent: event)
-        }
-    }
-
-    override func touchesEnded(touches: Set<UITouch>, withEvent event: UIEvent?) {
-        if !completionActive {
-            super.touchesEnded(touches, withEvent: event)
+        lastReplacement = ""
+        hideCursor = false
+        if isSelectionActive {
+            removeCompletion()
+            forceResetCursor()
         } else {
-            applyCompletion()
-
-            // Set the current position to the end of the text.
-            selectedTextRange = textRangeFromPosition(endOfDocument, toPosition: endOfDocument)
+            super.deleteBackward()
         }
+    }
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        applyCompletion()
+        super.touchesBegan(touches, with: event)
+    }
+}
+
+extension AutocompleteTextField: MenuHelperInterface {
+    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        if action == MenuHelper.SelectorPasteAndGo {
+            return UIPasteboard.general.hasStrings
+        }
+
+        return super.canPerformAction(action, withSender: sender)
+    }
+
+    @objc func menuHelperPasteAndGo() {
+        autocompleteDelegate?.autocompletePasteAndGo(self)
     }
 }
